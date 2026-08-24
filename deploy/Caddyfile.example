@@ -1,0 +1,4 @@
+finance.example.com {
+    reverse_proxy 127.0.0.1:8765
+    encode zstd gzip
+}

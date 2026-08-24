@@ -1,0 +1,18 @@
+services:
+  yanxiang-expense:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    container_name: yanxiang-expense-v2
+    restart: unless-stopped
+    ports:
+      - "8765:8765"
+    environment:
+      YXRT_MODE: cloud
+      YXRT_COOKIE_SECURE: "0"
+      YXRT_SYNC_SHARED_SECRET: "${YXRT_SYNC_SHARED_SECRET}"
+      YXRT_DEVICE_LABEL: "燕翔车队云端"
+      YXRT_OCR_WORKERS: "${YXRT_OCR_WORKERS:-2}"
+    volumes:
+      - ./runtime/data:/srv/data
+      - ./runtime/uploads:/srv/uploads

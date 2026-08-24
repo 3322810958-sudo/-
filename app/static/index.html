@@ -1,0 +1,311 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#07101b">
+  <title>燕翔车队经费管理系统 V2.1</title>
+  <link rel="icon" href="/static/assets/team-logo.png">
+  <link rel="stylesheet" href="/static/app.css?v=2.1.0">
+</head>
+<body>
+  <div id="backgroundLayer" class="background-layer"><video id="appBackgroundVideo" muted loop autoplay playsinline></video></div>
+  <div id="loginView" class="login-view">
+    <div id="loginMediaStage" class="login-media-stage" aria-hidden="true">
+      <div id="loginSlideLayerA" class="login-slide-layer active"></div>
+      <div id="loginSlideLayerB" class="login-slide-layer"></div>
+      <div class="login-media-shade"></div>
+      <div id="loginSlideCaption" class="login-slide-caption hidden"></div>
+    </div>
+    <div class="login-speedline"></div>
+    <section class="login-card">
+      <div class="login-brand">
+        <img src="/static/assets/team-logo.png" alt="燕翔车队队标">
+        <div>
+          <p class="eyebrow">赛车运营 · V2.1</p>
+          <h1><span id="loginTeamName">燕翔车队</span><br><span>经费管理系统</span></h1>
+        </div>
+      </div>
+      <p class="login-intro">发票、垫付、报销与 AA 结算，在一条清晰的数据链路中完成。</p>
+      <form id="loginForm" class="login-form">
+        <label>账号<input id="loginUsername" autocomplete="username" required value="admin"></label>
+        <label>密码<div class="password-field"><input id="loginPassword" type="password" autocomplete="current-password" required value="YXRT@2026"><button id="toggleLoginPassword" type="button" aria-label="显示密码" aria-pressed="false">显示</button></div></label>
+        <button class="btn primary wide" type="submit"><span>进入系统</span><b>→</b></button>
+        <p id="loginError" class="form-error" role="alert"></p>
+      </form>
+      <details class="account-hint">
+        <summary>首次登录账号</summary>
+        <p>管理员：<code>admin / YXRT@2026</code></p>
+        <p>成员：<code>member01 / Member@2026</code> 至 <code>member08</code></p>
+        <p>公共查看：<code>viewer / View@2026</code></p>
+      </details>
+      <footer><span>离线识别就绪</span><span>本地数据库</span><span>离线同步队列</span></footer>
+    </section>
+  </div>
+
+  <div id="appShell" class="app-shell hidden">
+    <aside class="sidebar">
+      <div class="brand-block">
+        <img src="/static/assets/team-logo.png" alt="燕翔车队队标">
+        <div><strong>燕翔车队</strong><small>经费控制</small></div>
+      </div>
+      <div class="season-badge"><span>赛季</span><strong>2026</strong><i></i></div>
+      <nav id="mainNav" aria-label="主导航">
+        <button data-view="dashboard" class="active"><span class="nav-icon">⌁</span><span>数据驾驶舱</span><em>01</em></button>
+        <button data-view="invoices"><span class="nav-icon">▤</span><span>发票台账</span><em>02</em></button>
+        <button data-view="settlements"><span class="nav-icon">⇄</span><span>AA 结算</span><em>03</em></button>
+        <button data-view="reports"><span class="nav-icon">◫</span><span>分类统计</span><em>04</em></button>
+        <button data-view="members"><span class="nav-icon">◎</span><span>成员与账号</span><em>05</em></button>
+        <button data-view="history" data-admin><span class="nav-icon">↶</span><span>日志与回溯</span><em>06</em></button>
+        <button data-view="settings"><span class="nav-icon">⚙</span><span>系统设置</span><em>07</em></button>
+      </nav>
+      <div class="sidebar-status">
+        <div id="syncLamp" class="status-lamp"></div>
+        <div><strong id="syncLabel">本地模式</strong><small id="syncDetail">数据安全保存在本机</small></div>
+      </div>
+      <div class="sidebar-foot"><span>燕翔车队经费</span><span id="versionLabel">V2.1</span></div>
+    </aside>
+
+    <div class="content-shell">
+      <header class="topbar">
+        <button id="mobileMenuBtn" class="icon-button mobile-only" aria-label="打开导航">☰</button>
+        <div class="route-heading"><p id="routeCode">数据驾驶舱 / 01</p><h2 id="routeTitle">数据驾驶舱</h2></div>
+        <div class="topbar-actions">
+          <div id="liveBadge" class="live-badge"><i></i><span>实时</span></div>
+          <button id="quickAddBtn" class="btn primary write-only">＋ 录入发票</button>
+          <button id="userMenuBtn" class="user-chip"><span id="userAvatar">管</span><span><b id="userName">系统管理员</b><small id="userRole">管理员</small></span></button>
+          <button id="logoutBtn" class="icon-button" title="退出登录">↪</button>
+        </div>
+      </header>
+
+      <main class="main-content">
+        <section id="dashboardSection" class="view-section active">
+          <div class="welcome-row">
+            <div><p class="eyebrow">经费实时状态</p><h3>经费状态，一眼读懂</h3><p id="dashboardSubtitle">正在读取最新经费数据</p></div>
+            <div class="track-tag"><span>同步</span><b id="dashboardSync">本地</b><i></i></div>
+          </div>
+          <div class="metrics-grid">
+            <article class="metric-card cyan"><div class="metric-top"><span>累计支出</span><em>01</em></div><strong id="metricTotal">¥0.00</strong><p><i></i><span id="metricInvoiceCount">0 张发票</span></p></article>
+            <article class="metric-card amber"><div class="metric-top"><span>待报销金额</span><em>02</em></div><strong id="metricPending">¥0.00</strong><p><i></i><span>仍需跟进</span></p></article>
+            <article class="metric-card green"><div class="metric-top"><span>已报销金额</span><em>03</em></div><strong id="metricReimbursed">¥0.00</strong><p><i></i><span>资金已回流</span></p></article>
+            <article class="metric-card red"><div class="metric-top"><span>待 AA 结算</span><em>04</em></div><strong id="metricAA">¥0.00</strong><p><i></i><span>成员净欠款</span></p></article>
+          </div>
+          <div class="dashboard-grid">
+            <article class="panel chart-panel wide-panel">
+              <div class="panel-heading"><div><p class="eyebrow">支出趋势</p><h3>月度支出趋势</h3></div><span class="panel-tag">近 12 月</span></div>
+              <div class="canvas-wrap"><canvas id="monthlyChart"></canvas></div>
+            </article>
+            <article class="panel chart-panel">
+              <div class="panel-heading"><div><p class="eyebrow">分类构成</p><h3>支出构成</h3></div></div>
+              <div class="donut-layout"><canvas id="categoryChart"></canvas><div id="categoryLegend" class="chart-legend"></div></div>
+            </article>
+          </div>
+          <article class="panel recent-panel">
+            <div class="panel-heading"><div><p class="eyebrow">最新录入</p><h3>最近记录</h3></div><button class="text-button" data-goto="invoices">查看全部 →</button></div>
+            <div class="table-scroll"><table><thead><tr><th>日期</th><th>销售方 / 项目</th><th>分类</th><th>垫付人</th><th>状态</th><th class="numeric">金额</th></tr></thead><tbody id="recentTable"></tbody></table></div>
+          </article>
+        </section>
+
+        <section id="invoicesSection" class="view-section">
+          <div class="section-toolbar">
+            <div><p class="eyebrow">发票与票据</p><h3>发票台账</h3><p>所有票据、垫付与报销状态统一管理。</p></div>
+            <div class="toolbar-actions"><button id="batchImportBtn" class="btn secondary write-only">批量 ZIP 导入</button><a class="btn secondary" href="/api/export/csv">导出 CSV</a><button id="invoiceAddBtn" class="btn primary write-only">＋ 新增记录</button></div>
+          </div>
+          <article class="panel filter-panel">
+            <div class="filter-grid">
+              <label class="search-field"><span>搜索</span><input id="invoiceSearch" placeholder="销售方、发票号、备注、产品类型"></label>
+              <label><span>报销状态</span><select id="invoiceStatusFilter"><option value="">全部状态</option><option value="pending">未报销</option><option value="partial">部分报销</option><option value="reimbursed">已报销</option></select></label>
+              <label><span>费用分类</span><select id="invoiceCategoryFilter"><option value="">全部分类</option></select></label>
+              <label><span>资金来源</span><select id="invoiceSourceFilter"><option value="">全部来源</option></select></label>
+              <button id="invoiceFilterBtn" class="btn secondary">筛选</button>
+            </div>
+          </article>
+          <article class="panel ledger-panel">
+            <div class="ledger-summary"><strong id="invoiceCount">0 条记录</strong><span id="invoiceSum">合计 ¥0.00</span></div>
+            <div class="table-scroll"><table class="ledger-table"><thead><tr><th>日期</th><th>发票 / 销售方</th><th>分类</th><th>垫付与分摊</th><th>资金来源</th><th>报销进度</th><th class="numeric">金额</th><th>操作</th></tr></thead><tbody id="invoiceTable"></tbody></table></div>
+          </article>
+        </section>
+
+        <section id="settlementsSection" class="view-section">
+          <div class="section-toolbar"><div><p class="eyebrow">成员均摊结算</p><h3>成员垫付与结算</h3><p>仅计算未报销及部分报销后的实际待承担金额。</p></div><button id="recordSettlementBtn" class="btn primary write-only">＋ 登记还款</button></div>
+          <div class="settlement-kpi"><span>当前待结清总额</span><strong id="settlementOutstanding">¥0.00</strong><em>自动抵消已登记还款</em></div>
+          <div id="memberBalanceGrid" class="member-balance-grid"></div>
+          <div class="two-column">
+            <article class="panel"><div class="panel-heading"><div><p class="eyebrow">建议转账</p><h3>最简转账建议</h3></div></div><div id="transferRecommendations" class="transfer-list"></div></article>
+            <article class="panel"><div class="panel-heading"><div><p class="eyebrow">结算记录</p><h3>还款记录</h3></div></div><div id="settlementHistory" class="compact-list"></div></article>
+          </div>
+        </section>
+
+        <section id="reportsSection" class="view-section">
+          <div class="section-toolbar"><div><p class="eyebrow">经费统计</p><h3>分类统计</h3><p>按分类、资金来源与垫付成员查看经费结构。</p></div><div class="date-filter"><input id="reportFrom" type="date"><span>至</span><input id="reportTo" type="date"><button id="reportRunBtn" class="btn secondary">刷新</button></div></div>
+          <div class="report-grid"><article class="panel"><div class="panel-heading"><h3>费用分类</h3></div><div id="categoryReport" class="report-bars"></div></article><article class="panel"><div class="panel-heading"><h3>资金来源</h3></div><div id="sourceReport" class="report-bars"></div></article></div>
+          <article class="panel"><div class="panel-heading"><h3>成员垫付排行</h3></div><div id="payerReport" class="report-bars horizontal"></div></article>
+        </section>
+
+        <section id="membersSection" class="view-section">
+          <div class="section-toolbar"><div><p class="eyebrow">成员权限</p><h3>成员与账号</h3><p>成员信息与登录账号分开管理，历史记录不会因成员停用而丢失。</p></div><div class="toolbar-actions" data-admin><button id="addUserBtn" class="btn secondary">＋ 新增账号</button><button id="addMemberBtn" class="btn primary">＋ 新增成员</button></div></div>
+          <div id="memberCards" class="member-cards"></div>
+          <article class="panel" data-admin><div class="panel-heading"><div><p class="eyebrow">登录账号</p><h3>登录账号与权限</h3></div></div><div class="table-scroll"><table><thead><tr><th>账号</th><th>显示名</th><th>关联成员</th><th>角色</th><th>状态</th><th>操作</th></tr></thead><tbody id="userTable"></tbody></table></div></article>
+        </section>
+
+        <section id="historySection" class="view-section" data-admin>
+          <div class="section-toolbar"><div><p class="eyebrow">版本控制</p><h3>日志与版本回溯</h3><p>每次关键修改前自动建立保护点，回溯操作仅管理员可用。</p></div><button id="createSnapshotBtn" class="btn primary">＋ 手动创建版本</button></div>
+          <div class="two-column history-grid"><article class="panel"><div class="panel-heading"><h3>可回溯版本</h3><span class="panel-tag">最多 100 个</span></div><div id="snapshotList" class="version-list"></div></article><article class="panel"><div class="panel-heading"><h3>操作日志</h3></div><div id="auditList" class="audit-list"></div></article></div>
+        </section>
+
+        <section id="settingsSection" class="view-section">
+          <div class="section-toolbar"><div><p class="eyebrow">系统配置</p><h3>系统设置</h3><p>配置账号、视觉、云端同步与数据维护。</p></div></div>
+          <div class="settings-grid">
+            <article class="panel setting-card"><div class="setting-icon">账号</div><div><h3>我的账号</h3><p>修改当前账号与密码。</p><button id="changeCredentialsBtn" class="btn secondary">修改登录信息</button></div></article>
+            <article class="panel setting-card write-only"><div class="setting-icon">选项</div><div><h3>分类与资金来源</h3><p>维护录入发票时可选的费用分类和资金来源。</p><button id="openReferencesBtn" class="btn secondary">管理选项</button></div></article>
+            <article class="panel setting-card" data-admin><div class="setting-icon">壁纸</div><div><h3>界面、壁纸与登录轮播</h3><p>连接 Wallpaper Engine，或上传图片、动图和视频。</p><button id="openAppearanceBtn" class="btn secondary">配置界面</button></div></article>
+            <article class="panel setting-card" data-admin><div class="setting-icon">分类</div><div><h3>发票智能分类</h3><p>编辑离线关键词规则，并结合商家历史选择自动学习。</p><button id="openClassificationBtn" class="btn secondary">管理识别规则</button></div></article>
+            <article class="panel setting-card" data-admin><div class="setting-icon">↕</div><div><h3>云端自动同步</h3><p id="syncSettingText">未配置云端服务器。</p><button id="openSyncBtn" class="btn secondary">配置同步</button></div></article>
+            <article class="panel setting-card" data-admin><div class="setting-icon">备份</div><div><h3>备份与恢复</h3><p>完整备份数据库和全部附件。</p><div class="inline-actions"><a class="btn secondary" href="/api/admin/backup">下载备份</a><label class="btn danger subtle">恢复备份<input id="restoreBackupInput" type="file" accept=".zip" hidden></label></div></div></article>
+            <article class="panel setting-card" data-admin><div class="setting-icon">演示</div><div><h3>演示数据</h3><p>只清除初始演示记录，不影响正式数据。</p><button id="deleteDemoBtn" class="btn danger subtle">清除演示数据</button></div></article>
+            <article class="panel setting-card"><div class="setting-icon">识别</div><div><h3>离线文字识别</h3><p>优先读取 PDF 文本，扫描件使用本地识别引擎，不上传第三方。</p><span class="setting-state good">本机运行</span></div></article>
+          </div>
+        </section>
+      </main>
+    </div>
+  </div>
+
+  <dialog id="invoiceDialog" class="modal large-modal">
+    <form id="invoiceForm" class="modal-card">
+      <header><div><p class="eyebrow">发票录入</p><h3 id="invoiceDialogTitle">新增发票记录</h3></div><button type="button" class="dialog-close" data-close="invoiceDialog">×</button></header>
+      <input id="invoiceId" type="hidden"><input id="invoiceVersion" type="hidden"><input id="attachmentId" type="hidden"><input id="ocrText" type="hidden"><input id="ocrConfidence" type="hidden"><input id="ocrStatus" type="hidden">
+      <div class="upload-ribbon">
+        <label class="upload-zone"><input id="invoiceFile" type="file" accept="image/*,.pdf,.ofd,.txt"><span class="upload-symbol">⇧</span><span><b>上传发票附件</b><small>图片 / PDF / OFD / TXT，无固定大小限制</small></span></label>
+        <div class="ocr-panel"><span id="fileState">尚未选择附件</span><button id="runOcrBtn" type="button" class="btn secondary" disabled>离线识别</button><div class="ocr-progress"><i id="ocrProgressBar"></i></div><small id="ocrMessage">电子 PDF 将优先直接读取文字</small></div>
+      </div>
+      <div class="form-grid three">
+        <label><span>开票日期 *</span><input id="invoiceDate" type="date" required></label>
+        <label><span>发票总额 / 元 *</span><input id="invoiceAmount" type="number" min="0.01" step="0.01" required placeholder="0.00"></label>
+        <label><span>税额 / 元</span><input id="invoiceTax" type="number" min="0" step="0.01" value="0"></label>
+        <label><span>发票号码</span><input id="invoiceNo" maxlength="80" placeholder="OCR 或手动填写"></label>
+        <label><span>销售方 / 商家</span><input id="invoiceVendor" maxlength="160" placeholder="销售方名称"></label>
+        <label><span>产品类型</span><select id="invoiceProduct"></select></label>
+        <label><span>费用分类</span><select id="invoiceCategory"></select></label>
+        <label><span>垫付成员 *</span><select id="invoicePayer" required></select></label>
+        <label><span>资金来源</span><select id="invoiceSource"></select></label>
+      </div>
+      <div id="classificationHint" class="classification-hint hidden"></div>
+      <section class="split-editor">
+        <div class="split-editor-head"><div><span>费用承担方式</span><div class="segmented"><label><input type="radio" name="burdenType" value="team_aa" checked><span>全队 AA</span></label><label><input type="radio" name="burdenType" value="specified_split"><span>指定成员</span></label><label><input type="radio" name="burdenType" value="self_paid"><span>个人承担</span></label></div></div><label><span>分摊算法</span><select id="splitMode"><option value="equal">等额分摊</option><option value="weighted">按权重分摊</option></select></label></div>
+        <div id="splitMemberPicker" class="split-member-picker"></div>
+        <p class="split-note">金额除不尽时自动按 0.01 元精确抹零，确保分摊合计与发票总额完全一致。</p>
+      </section>
+      <div class="form-grid three reimbursement-grid">
+        <label><span>已报销金额 / 元</span><input id="reimbursedAmount" type="number" min="0" step="0.01" value="0"></label>
+        <label><span>报销日期</span><input id="reimbursementDate" type="date"></label>
+        <div class="computed-status"><span>自动状态</span><strong id="computedReimbursementStatus">未报销</strong></div>
+      </div>
+      <label class="full-label"><span>备注</span><textarea id="invoiceNote" rows="3" maxlength="2000" placeholder="用途、采购批次、报销进度或异常说明"></textarea></label>
+      <footer><button type="button" class="btn secondary" data-close="invoiceDialog">取消</button><button id="saveInvoiceBtn" class="btn primary" type="submit">保存发票记录</button></footer>
+    </form>
+  </dialog>
+
+  <dialog id="batchDialog" class="modal">
+    <form id="batchForm" class="modal-card">
+      <header><div><p class="eyebrow">批量导入</p><h3>ZIP 批量导入</h3></div><button type="button" class="dialog-close" data-close="batchDialog">×</button></header>
+      <label class="upload-zone batch-upload"><input id="batchFile" type="file" accept=".zip" required><span class="upload-symbol">ZIP</span><span><b>选择发票压缩包</b><small>自动安全解压并并行排队识别，文件数量不设固定上限</small></span></label>
+      <div class="form-grid two"><label><span>默认分类</span><select id="batchCategory"></select></label><label><span>默认垫付成员</span><select id="batchPayer"></select></label><label><span>默认资金来源</span><select id="batchSource"></select></label><label><span>默认承担方式</span><select id="batchBurden"><option value="team_aa">全队 AA</option><option value="specified_split">指定成员</option><option value="self_paid">个人承担</option></select></label></div>
+      <label class="full-label"><span>批次备注</span><textarea id="batchNote" rows="2" placeholder="例如：8 月电气组采购批次"></textarea></label>
+      <div id="batchResult" class="batch-result"></div>
+      <footer><button type="button" class="btn secondary" data-close="batchDialog">取消</button><button class="btn primary" type="submit">开始批量导入</button></footer>
+    </form>
+  </dialog>
+
+  <dialog id="settlementDialog" class="modal small-modal"><form id="settlementForm" class="modal-card"><header><div><p class="eyebrow">成员还款</p><h3>登记成员还款</h3></div><button type="button" class="dialog-close" data-close="settlementDialog">×</button></header><div class="form-grid two"><label><span>付款成员</span><select id="settlementFrom" required></select></label><label><span>收款成员</span><select id="settlementTo" required></select></label><label><span>金额 / 元</span><input id="settlementAmount" type="number" min="0.01" step="0.01" required></label><label><span>还款日期</span><input id="settlementDate" type="date" required></label></div><label class="full-label"><span>备注</span><textarea id="settlementNote" rows="2"></textarea></label><footer><button type="button" class="btn secondary" data-close="settlementDialog">取消</button><button class="btn primary">确认登记</button></footer></form></dialog>
+
+  <dialog id="memberDialog" class="modal"><form id="memberForm" class="modal-card"><header><div><p class="eyebrow">车队成员</p><h3 id="memberDialogTitle">新增成员</h3></div><button type="button" class="dialog-close" data-close="memberDialog">×</button></header><input id="memberId" type="hidden"><div class="form-grid two"><label><span>姓名 *</span><input id="memberName" required></label><label><span>所属组别</span><input id="memberDepartment" placeholder="车架组 / 电气组等"></label><label><span>学号</span><input id="memberStudentId"></label><label><span>手机号</span><input id="memberPhone"></label><label><span>邮箱</span><input id="memberEmail" type="email"></label><label><span>标识色</span><input id="memberColor" type="color" value="#27d3ff"></label></div><footer><button type="button" class="btn secondary" data-close="memberDialog">取消</button><button class="btn primary">保存成员</button></footer></form></dialog>
+
+  <dialog id="userDialog" class="modal"><form id="userForm" class="modal-card"><header><div><p class="eyebrow">登录账号</p><h3 id="userDialogTitle">新增账号</h3></div><button type="button" class="dialog-close" data-close="userDialog">×</button></header><input id="editUserId" type="hidden"><div class="form-grid two"><label><span>登录账号 *</span><input id="editUsername" required></label><label><span>显示名称 *</span><input id="editDisplayName" required></label><label><span>关联成员</span><select id="editUserMember"><option value="">不关联</option></select></label><label><span>权限角色</span><select id="editUserRole"><option value="member">成员 - 可增删改</option><option value="viewer">公共查看 - 只读</option><option value="admin">管理员 - 全部权限</option></select></label><label><span>设置密码</span><input id="editUserPassword" type="password" placeholder="编辑时留空表示不修改"></label><label class="switch-label"><span>账号启用</span><input id="editUserActive" type="checkbox" checked></label></div><footer><button type="button" class="btn secondary" data-close="userDialog">取消</button><button class="btn primary">保存账号</button></footer></form></dialog>
+
+  <dialog id="credentialsDialog" class="modal small-modal"><form id="credentialsForm" class="modal-card"><header><div><p class="eyebrow">账号安全</p><h3>修改登录信息</h3></div><button type="button" class="dialog-close" data-close="credentialsDialog">×</button></header><label class="full-label"><span>当前密码</span><input id="currentPassword" type="password" required></label><label class="full-label"><span>新账号</span><input id="newUsername" required></label><label class="full-label"><span>新密码</span><input id="newPassword" type="password" minlength="8" required><small>至少 8 位，同时包含字母和数字</small></label><footer><button type="button" class="btn secondary" data-close="credentialsDialog">取消</button><button class="btn primary">确认修改</button></footer></form></dialog>
+
+  <dialog id="referencesDialog" class="modal large-modal">
+    <div class="modal-card">
+      <header><div><p class="eyebrow">基础选项</p><h3>分类与资金来源</h3></div><button type="button" class="dialog-close" data-close="referencesDialog">×</button></header>
+      <div class="reference-manager-grid">
+        <section class="reference-pane">
+          <div class="reference-pane-heading"><div><span>费用分类</span><small>用于分类统计与筛选</small></div><button id="resetCategoryBtn" type="button" class="btn secondary compact">＋ 新建</button></div>
+          <form id="categoryForm" class="reference-form">
+            <input id="categoryId" type="hidden">
+            <label class="reference-name"><span>名称 *</span><input id="categoryName" maxlength="80" required placeholder="例如：机械加工"></label>
+            <label><span>标识色</span><input id="categoryColor" type="color" value="#27d3ff"></label>
+            <label class="switch-label reference-active"><span>启用</span><input id="categoryActive" type="checkbox" checked></label>
+            <button id="categorySaveBtn" class="btn primary" type="submit">添加分类</button>
+          </form>
+          <div id="categoryManagerList" class="reference-manager-list"></div>
+        </section>
+        <section class="reference-pane">
+          <div class="reference-pane-heading"><div><span>资金来源</span><small>报销来源为非必选项</small></div><button id="resetSourceBtn" type="button" class="btn secondary compact">＋ 新建</button></div>
+          <form id="sourceForm" class="reference-form source-form">
+            <input id="sourceId" type="hidden">
+            <label class="reference-name"><span>名称 *</span><input id="sourceName" maxlength="80" required placeholder="例如：赛事专项经费"></label>
+            <label><span>类型</span><select id="sourceType"><option value="team">车队经费</option><option value="reimbursement">报销款</option><option value="sponsor">赞助款</option><option value="aa">成员 AA</option><option value="loan">借款</option><option value="other">其他</option></select></label>
+            <label><span>标识色</span><input id="sourceColor" type="color" value="#27d3ff"></label>
+            <label class="switch-label reference-active"><span>启用</span><input id="sourceActive" type="checkbox" checked></label>
+            <button id="sourceSaveBtn" class="btn primary" type="submit">添加来源</button>
+          </form>
+          <div id="sourceManagerList" class="reference-manager-list"></div>
+        </section>
+      </div>
+      <footer><button type="button" class="btn primary" data-close="referencesDialog">完成</button></footer>
+    </div>
+  </dialog>
+
+  <dialog id="appearanceDialog" class="modal large-modal">
+    <form id="appearanceForm" class="modal-card">
+      <header><div><p class="eyebrow">界面外观</p><h3>品牌、壁纸与登录轮播</h3></div><button type="button" class="dialog-close" data-close="appearanceDialog">×</button></header>
+      <div class="appearance-layout">
+        <section class="appearance-pane">
+          <div class="appearance-heading"><div><b>全局界面</b><small>修改车队名称、主题颜色和背景显示强度</small></div></div>
+          <div class="form-grid two"><label><span>系统名称</span><input id="teamNameSetting"></label><label><span>主题强调色</span><input id="accentColor" type="color" value="#27d3ff"></label></div>
+          <label class="full-label"><span>背景遮罩强度 <b id="overlayValue">82%</b></span><input id="backgroundOverlay" type="range" min="20" max="98" value="82"></label>
+          <div class="background-control"><div id="backgroundPreview" class="media-preview empty">当前使用默认赛车背景</div><div><label class="btn secondary media-upload-btn">上传自定义背景<input id="backgroundFile" type="file" accept="image/*,video/mp4,video/webm,.gif,.m4v" hidden></label><button id="clearBackgroundBtn" type="button" class="btn danger subtle">恢复默认背景</button><small>支持图片、GIF、MP4 和 WebM，文件保存在本机。</small></div></div>
+        </section>
+
+        <section class="appearance-pane">
+          <div class="appearance-heading"><div><b>登录界面轮播</b><small>管理员可调整顺序、标题、停留时间和启停状态</small></div><label class="mini-switch"><input id="loginSlideshowEnabled" type="checkbox" checked><span>启用轮播</span></label></div>
+          <div class="carousel-toolbar"><label>切换效果<select id="loginTransition"><option value="fade">淡入淡出</option><option value="slide">左右滑动</option></select></label><label class="btn secondary media-upload-btn">添加图片或视频<input id="loginMediaFiles" type="file" accept="image/*,video/mp4,video/webm,.gif,.m4v" multiple hidden></label></div>
+          <div id="loginSlideEditor" class="login-slide-editor"><div class="empty-state">尚未添加登录轮播媒体</div></div>
+        </section>
+
+        <section class="appearance-pane wallpaper-pane">
+          <div class="appearance-heading"><div><b>Wallpaper Engine 壁纸库</b><small>自动读取 Steam 创意工坊；场景和网页壁纸使用其预览图</small></div><button id="scanWallpapersBtn" type="button" class="btn secondary">扫描壁纸库</button></div>
+          <div id="wallpaperStatus" class="wallpaper-status">点击“扫描壁纸库”读取本机内容。</div>
+          <div id="wallpaperGrid" class="wallpaper-grid"></div>
+        </section>
+      </div>
+      <footer><button type="button" class="btn secondary" data-close="appearanceDialog">取消</button><button class="btn primary">保存全部界面设置</button></footer>
+    </form>
+  </dialog>
+
+  <dialog id="classificationDialog" class="modal large-modal">
+    <div class="modal-card">
+      <header><div><p class="eyebrow">离线智能分类</p><h3>发票种类识别规则</h3></div><button type="button" class="dialog-close" data-close="classificationDialog">×</button></header>
+      <div class="classification-toolbar"><p>识别后自动填写“产品类型”和“费用分类”。人工修改并保存后，同一商家下次会优先采用历史选择。</p><div><button id="newRuleBtn" type="button" class="btn secondary">＋ 新建规则</button><button id="resetRulesBtn" type="button" class="btn danger subtle">恢复默认规则</button></div></div>
+      <form id="classificationRuleForm" class="classification-rule-form">
+        <input id="classificationRuleId" type="hidden">
+        <label><span>规则名称 *</span><input id="classificationRuleName" maxlength="80" required placeholder="例如：继电器"></label>
+        <label class="rule-keywords"><span>关键词 *（逗号分隔）</span><input id="classificationRuleKeywords" required placeholder="继电器，固态继电器，接触器"></label>
+        <label><span>费用分类</span><select id="classificationRuleCategory"></select></label>
+        <label><span>产品类型</span><select id="classificationRuleProduct"></select></label>
+        <label><span>优先级</span><input id="classificationRulePriority" type="number" min="1" max="999" value="100"></label>
+        <label class="switch-label"><span>启用</span><input id="classificationRuleActive" type="checkbox" checked></label>
+        <button id="classificationRuleSaveBtn" class="btn primary" type="submit">添加规则</button>
+      </form>
+      <div id="classificationRuleList" class="classification-rule-list"></div>
+      <footer><button type="button" class="btn primary" data-close="classificationDialog">完成</button></footer>
+    </div>
+  </dialog>
+
+  <dialog id="syncDialog" class="modal small-modal"><form id="syncForm" class="modal-card"><header><div><p class="eyebrow">云端同步</p><h3>云端自动同步</h3></div><button type="button" class="dialog-close" data-close="syncDialog">×</button></header><label class="switch-row"><span><b>启用自动同步</b><small>断网时写入本地队列，联网后自动双向同步</small></span><input id="syncEnabled" type="checkbox"></label><label class="full-label"><span>云端服务器地址</span><input id="remoteUrl" type="url" placeholder="https://finance.example.com"></label><label class="full-label"><span>同步密钥</span><input id="syncSecret" type="password" placeholder="已配置时可留空"><small>必须与 Linux 云端部署配置一致</small></label><div id="syncDialogStatus" class="sync-dialog-status"></div><footer><button id="syncNowBtn" type="button" class="btn secondary">立即同步</button><button class="btn primary">保存配置</button></footer></form></dialog>
+
+  <div id="toastRegion" class="toast-region" aria-live="polite"></div>
+  <div id="loadingOverlay" class="loading-overlay hidden"><div class="loader-ring"></div><strong id="loadingText">正在处理</strong></div>
+  <script src="/static/app.js?v=2.1.0"></script>
+</body>
+</html>

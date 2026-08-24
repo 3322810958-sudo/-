@@ -1,0 +1,33 @@
+# Runtime data and secrets
+data/
+uploads/
+tmp/
+*.db
+*.db-shm
+*.db-wal
+.env
+
+# Local OCR models and packaged builds
+models/
+build/
+dist/
+release/
+output/
+*.spec.bak
+
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Editors and operating systems
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Generated documents
+docs/generated/
