@@ -74,12 +74,17 @@ def invoice_payload(conn: sqlite3.Connection, invoice_id: str) -> dict[str, Any]
         """SELECT i.*,c.name AS category_name,c.color AS category_color,
         f.name AS funding_source_name,f.color AS funding_source_color,
         m.name AS payer_name,a.original_name AS attachment_name,a.mime_type AS attachment_mime,
-        a.size_bytes AS attachment_size,a.sha256 AS attachment_sha256
+        a.size_bytes AS attachment_size,a.sha256 AS attachment_sha256,
+        COALESCE(a.created_at,i.created_at) AS uploaded_at,
+        COALESCE(creator.display_name,uploader.display_name,'系统任务') AS created_by_name,
+        creator.username AS created_by_username
         FROM invoices i
         LEFT JOIN categories c ON c.id=i.category_id
         LEFT JOIN funding_sources f ON f.id=i.funding_source_id
         LEFT JOIN members m ON m.id=i.payer_member_id
         LEFT JOIN attachments a ON a.id=i.attachment_id
+        LEFT JOIN users creator ON creator.id=i.created_by
+        LEFT JOIN users uploader ON uploader.id=a.uploaded_by
         WHERE i.id=?""",
         (invoice_id,),
     ).fetchone()
@@ -135,7 +140,7 @@ def list_invoices(
         params.append(date_to)
     rows = conn.execute(
         f"SELECT i.id FROM invoices i WHERE {' AND '.join(clauses)} ORDER BY i.invoice_date DESC,i.created_at DESC LIMIT ?",
-        (*params, min(max(int(limit), 1), 2000)),
+        (*params, min(max(int(limit), 1), 100000)),
     ).fetchall()
     return [item for row in rows if (item := invoice_payload(conn, row["id"]))]
 
@@ -327,6 +332,107 @@ def delete_invoice(invoice_id: str, user: dict[str, Any]) -> None:
             )
             enqueue_sync_event(conn, "invoice_splits", split["id"], "delete", split)
         audit(conn, user["id"], "delete", "invoice", invoice_id, {"vendor": current["vendor"]})
+
+
+def batch_update_invoices(payload: dict[str, Any], user: dict[str, Any]) -> dict[str, Any]:
+    raw_ids = payload.get("ids") or []
+    if not isinstance(raw_ids, list):
+        raise BusinessError("批量操作记录格式不正确")
+    invoice_ids = list(dict.fromkeys(str(value) for value in raw_ids if str(value).strip()))
+    if not invoice_ids:
+        raise BusinessError("请至少选择一张发票")
+    if len(invoice_ids) > 10000:
+        raise BusinessError("单次最多处理 10000 张发票")
+
+    action = str(payload.get("action") or "")
+    if action not in {"delete", "category", "status"}:
+        raise BusinessError("不支持该批量操作")
+
+    placeholders = ",".join("?" for _ in invoice_ids)
+    with transaction() as conn:
+        rows = [dict(row) for row in conn.execute(
+            f"SELECT * FROM invoices WHERE id IN ({placeholders}) AND deleted_at IS NULL",
+            invoice_ids,
+        ).fetchall()]
+        if not rows:
+            raise BusinessError("所选发票不存在或已删除", 404)
+
+        now = utc_now()
+        device_id = get_device_id(conn)
+        skipped = 0
+        category_id: str | None = None
+        target_status = ""
+        ratio = 50
+        if action == "category":
+            category_id = str(payload.get("category_id") or "") or None
+            if category_id and not conn.execute(
+                "SELECT 1 FROM categories WHERE id=? AND deleted_at IS NULL", (category_id,)
+            ).fetchone():
+                raise BusinessError("所选费用分类不存在")
+        elif action == "status":
+            target_status = str(payload.get("status") or "")
+            if target_status not in {"pending", "partial", "reimbursed"}:
+                raise BusinessError("请选择正确的报销状态")
+            try:
+                ratio = max(1, min(99, int(payload.get("reimbursement_ratio", 50))))
+            except (TypeError, ValueError):
+                raise BusinessError("部分报销比例格式不正确") from None
+
+        labels = {"delete": "批量删除发票前", "category": "批量修改分类前", "status": "批量修改报销状态前"}
+        create_snapshot(conn, user["id"], labels[action], f"共选择 {len(rows)} 张发票")
+        changed = 0
+        total_cents = 0
+        for row in rows:
+            total_cents += int(row["total_amount_cents"] or 0)
+            row["updated_at"] = now
+            row["version"] = int(row["version"]) + 1
+            row["device_id"] = device_id
+            sync_action = "upsert"
+            if action == "delete":
+                row["deleted_at"] = now
+                sync_action = "delete"
+            elif action == "category":
+                row["category_id"] = category_id
+            else:
+                total = int(row["total_amount_cents"] or 0)
+                if target_status == "partial" and total <= 1:
+                    skipped += 1
+                    continue
+                if target_status == "pending":
+                    row["reimbursed_amount_cents"] = 0
+                    row["reimbursement_date"] = None
+                elif target_status == "reimbursed":
+                    row["reimbursed_amount_cents"] = total
+                    row["reimbursement_date"] = str(payload.get("reimbursement_date") or now[:10])[:10]
+                else:
+                    row["reimbursed_amount_cents"] = max(1, min(total - 1, int(round(total * ratio / 100))))
+                    row["reimbursement_date"] = str(payload.get("reimbursement_date") or now[:10])[:10]
+                row["reimbursement_status"] = target_status
+
+            columns = [key for key in row if key != "id"]
+            conn.execute(
+                f"UPDATE invoices SET {','.join(f'{key}=?' for key in columns)} WHERE id=?",
+                tuple(row[key] for key in columns) + (row["id"],),
+            )
+            enqueue_sync_event(conn, "invoices", row["id"], sync_action, row)
+            if action == "delete":
+                for split_row in conn.execute(
+                    "SELECT * FROM invoice_splits WHERE invoice_id=? AND deleted_at IS NULL", (row["id"],)
+                ).fetchall():
+                    split = dict(split_row)
+                    split.update({"deleted_at": now, "updated_at": now, "version": int(split["version"]) + 1, "device_id": device_id})
+                    conn.execute(
+                        "UPDATE invoice_splits SET deleted_at=?,updated_at=?,version=?,device_id=? WHERE id=?",
+                        (now, now, split["version"], device_id, split["id"]),
+                    )
+                    enqueue_sync_event(conn, "invoice_splits", split["id"], "delete", split)
+            changed += 1
+
+        audit(conn, user["id"], f"batch_{action}", "invoice", None, {
+            "requested": len(invoice_ids), "changed": changed, "skipped": skipped,
+            "amount": yuan(total_cents), "status": target_status, "category_id": category_id,
+        })
+        return {"ok": True, "changed_count": changed, "skipped_count": skipped, "total_amount": yuan(total_cents)}
 
 
 def dashboard(conn: sqlite3.Connection) -> dict[str, Any]:

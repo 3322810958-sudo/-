@@ -2,3 +2,4 @@
 -r requirements-ocr.txt
 pytest>=8,<10
 pyinstaller>=6,<7
+reportlab>=4.2,<5

@@ -341,7 +341,7 @@ def set_setting(conn: sqlite3.Connection, key: str, value: str, *, sync: bool = 
     if sync and key in {
         "team_name", "background_image", "background_media_id", "background_media_kind",
         "background_overlay", "accent_color", "login_slideshow_enabled", "login_slides",
-        "login_transition", "classification_rules",
+        "login_transition", "loading_cars", "classification_rules",
     }:
         enqueue_sync_event(conn, "app_settings", key, "upsert", {
             "key": key, "value": value, "updated_at": now, "version": version, "device_id": device_id
@@ -401,7 +401,7 @@ def snapshot_state(conn: sqlite3.Connection) -> dict[str, Any]:
     allowed_settings = (
         "team_name", "background_image", "background_media_id", "background_media_kind",
         "background_overlay", "accent_color", "login_slideshow_enabled", "login_slides",
-        "login_transition", "classification_rules",
+        "login_transition", "loading_cars", "classification_rules",
     )
     placeholders = ",".join("?" for _ in allowed_settings)
     state["tables"]["app_settings"] = [
@@ -444,7 +444,7 @@ def restore_snapshot(conn: sqlite3.Connection, snapshot_id: str, user_id: str) -
     restore_setting_keys = (
         "team_name", "background_image", "background_media_id", "background_media_kind",
         "background_overlay", "accent_color", "login_slideshow_enabled", "login_slides",
-        "login_transition", "classification_rules",
+        "login_transition", "loading_cars", "classification_rules",
     )
     conn.execute(
         f"DELETE FROM app_settings WHERE key IN ({','.join('?' for _ in restore_setting_keys)})",
@@ -560,6 +560,7 @@ def seed_defaults(conn: sqlite3.Connection) -> None:
         "login_slideshow_enabled": "1",
         "login_slides": "[]",
         "login_transition": "fade",
+        "loading_cars": "[]",
         "classification_rules": "[]",
         "sync_enabled": "0",
         "remote_url": "",

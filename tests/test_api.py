@@ -174,3 +174,97 @@ def test_v21_classification_rules_are_admin_only():
         assert viewer.get("/api/admin/classification-rules").status_code == 403
         denied = viewer.put("/api/admin/classification-rules", json={"items": []}, headers=headers)
         assert denied.status_code == 403
+
+
+def test_v22_selected_csv_batch_actions_and_submitter_columns():
+    with TestClient(app) as client:
+        _, headers = login(client, "admin", "YXRT@2026")
+        invoices = client.get("/api/invoices").json()["items"]
+        chosen = invoices[:2]
+        assert all(item.get("created_by_name") for item in chosen)
+        assert all(item.get("uploaded_at") for item in chosen)
+
+        selected_export = client.post(
+            "/api/export/csv", json={"ids": [item["id"] for item in chosen]}, headers=headers
+        )
+        assert selected_export.status_code == 200, selected_export.text
+        assert selected_export.headers["X-Export-Count"] == "2"
+        expected_total = sum(float(item["total_amount"]) for item in chosen)
+        assert float(selected_export.headers["X-Export-Total"]) == expected_total
+        csv_text = selected_export.content.decode("utf-8-sig")
+        assert "开票日期,上传日期,提交人,提交账号" in csv_text
+
+        category_update = client.post(
+            "/api/invoices/batch-action",
+            json={"ids": [item["id"] for item in chosen], "action": "category", "category_id": "cat_electrical"},
+            headers=headers,
+        )
+        assert category_update.status_code == 200, category_update.text
+        assert category_update.json()["changed_count"] == 2
+
+        status_update = client.post(
+            "/api/invoices/batch-action",
+            json={
+                "ids": [item["id"] for item in chosen], "action": "status", "status": "reimbursed",
+                "reimbursement_date": "2026-08-25",
+            },
+            headers=headers,
+        )
+        assert status_update.status_code == 200, status_update.text
+        assert status_update.json()["changed_count"] == 2
+        refreshed = {item["id"]: item for item in client.get("/api/invoices").json()["items"]}
+        assert all(refreshed[item["id"]]["reimbursement_status"] == "reimbursed" for item in chosen)
+
+    with TestClient(app) as viewer:
+        _, viewer_headers = login(viewer, "viewer", "View@2026")
+        denied = viewer.post(
+            "/api/invoices/batch-action",
+            json={"ids": [chosen[0]["id"]], "action": "delete"},
+            headers=viewer_headers,
+        )
+        assert denied.status_code == 403
+
+
+def test_v22_multiple_file_import_and_editable_loading_cars():
+    with TestClient(app) as client:
+        _, headers = login(client, "admin", "YXRT@2026")
+        files = [
+            ("files", ("invoice-a.txt", "发票号码：A001\n开票日期：2026-08-24\n价税合计（小写）￥12.34\n销售方名称：测试商店A".encode("utf-8"), "text/plain")),
+            ("files", ("invoice-b.txt", "发票号码：B002\n开票日期：2026-08-25\n价税合计（小写）￥56.78\n销售方名称：测试商店B".encode("utf-8"), "text/plain")),
+        ]
+        imported = client.post(
+            "/api/import/files",
+            files=files,
+            data={"payer_member_id": "member_01", "burden_type": "team_aa", "split_member_ids": "[]"},
+            headers=headers,
+        )
+        assert imported.status_code == 200, imported.text
+        result = imported.json()
+        assert result["count"] == 2
+        assert len(result["jobs"]) == 2
+        totals = []
+        for queued in result["jobs"]:
+            for _ in range(100):
+                job = client.get(f"/api/ocr/jobs/{queued['job_id']}").json()
+                if job["status"] in {"done", "failed"}:
+                    break
+            assert job["status"] == "done", job
+            totals.append(job["result"]["total_amount"])
+        assert sorted(totals) == [12.34, 56.78]
+
+        png = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl2nWQAAAAASUVORK5CYII=")
+        upload = client.post(
+            "/api/admin/appearance/media",
+            files={"file": ("custom-car.png", png, "image/png")},
+            headers=headers,
+        )
+        media = upload.json()["media"]
+        saved = client.put(
+            "/api/admin/settings",
+            json={"loading_cars": [{"attachment_id": media["attachment_id"], "title": "自定义测试赛车"}]},
+            headers=headers,
+        )
+        assert saved.status_code == 200, saved.text
+        assert saved.json()["settings"]["loading_cars"][0]["title"] == "自定义测试赛车"
+        public = client.get("/api/public/appearance").json()["settings"]
+        assert public["loading_cars"][0]["url"].startswith("/api/public/media/")

@@ -25,7 +25,7 @@ from reportlab.platypus import (
 
 
 ROOT = Path(__file__).resolve().parents[1]
-OUTPUT = ROOT / "output" / "pdf" / "燕翔车队经费管理系统_V2.1_使用教程.pdf"
+OUTPUT = ROOT / "output" / "pdf" / "燕翔车队经费管理系统_V2.2_使用教程.pdf"
 LOGO = ROOT / "app" / "static" / "assets" / "team-logo.png"
 WORDMARK = ROOT / "app" / "static" / "assets" / "team-wordmark.png"
 
@@ -171,11 +171,11 @@ def cover_page(canvas, doc) -> None:
     canvas.drawString(23 * mm, PAGE_H - 116 * mm, "车队经费管理系统")
     canvas.setFont("YaHeiBold", 16)
     canvas.setFillColor(CYAN)
-    canvas.drawString(23 * mm, PAGE_H - 132 * mm, "V2.1  使用教程")
+    canvas.drawString(23 * mm, PAGE_H - 132 * mm, "V2.2  使用教程")
     canvas.setFont("YaHei", 9.5)
     canvas.setFillColor(colors.HexColor("#B7C9D8"))
-    canvas.drawString(23 * mm, PAGE_H - 151 * mm, "Windows 软件 · 智能分类 · 动态壁纸 · AA 分摊 · 版本回溯")
-    badges = ["OFFLINE FIRST", "SMART CLASSIFY", "WALLPAPER", "ADMIN CONTROL"]
+    canvas.drawString(23 * mm, PAGE_H - 151 * mm, "Windows 软件 · 批量台账 · 离线识别 · AA 分摊 · 无损更新")
+    badges = ["OFFLINE FIRST", "BATCH INVOICE", "AUTO UPDATE", "ADMIN CONTROL"]
     x = 23 * mm
     for badge in badges:
         width = canvas.stringWidth(badge, "YaHeiBold", 7) + 8 * mm
@@ -201,12 +201,12 @@ def content_page(canvas, doc) -> None:
     canvas.rect(0, PAGE_H - 16 * mm, 4 * mm, 16 * mm, fill=1, stroke=0)
     canvas.setFont("YaHeiBold", 7.5)
     canvas.setFillColor(WHITE)
-    canvas.drawString(15 * mm, PAGE_H - 10 * mm, "YANXIANG RACING · EXPENSE CONTROL V2.1")
+    canvas.drawString(15 * mm, PAGE_H - 10 * mm, "YANXIANG RACING · EXPENSE CONTROL V2.2")
     canvas.setStrokeColor(BORDER)
     canvas.line(15 * mm, 14 * mm, PAGE_W - 15 * mm, 14 * mm)
     canvas.setFont("YaHei", 7)
     canvas.setFillColor(MUTED)
-    canvas.drawString(15 * mm, 8.5 * mm, "燕翔车队经费管理系统 V2.1 使用教程")
+    canvas.drawString(15 * mm, 8.5 * mm, "燕翔车队经费管理系统 V2.2 使用教程")
     canvas.drawRightString(PAGE_W - 15 * mm, 8.5 * mm, f"{doc.page - 1:02d}")
     canvas.restoreState()
 
@@ -216,9 +216,9 @@ def make_document() -> None:
     doc = BaseDocTemplate(
         str(OUTPUT), pagesize=A4, leftMargin=22 * mm, rightMargin=22 * mm,
         topMargin=25 * mm, bottomMargin=20 * mm,
-        title="燕翔车队经费管理系统 V2.1 使用教程",
+        title="燕翔车队经费管理系统 V2.2 使用教程",
         author="燕翔车队 Racing Team",
-        subject="经费管理系统运行、智能分类、动态壁纸、AA、同步与回溯说明",
+        subject="经费管理系统批量台账、离线识别、AA、动态外观、无损更新与回溯说明",
     )
     cover_frame = Frame(0, 0, PAGE_W, PAGE_H, id="cover-frame", leftPadding=0, rightPadding=0, topPadding=0, bottomPadding=0)
     content_frame = Frame(doc.leftMargin, doc.bottomMargin, doc.width, doc.height, id="content-frame")
@@ -264,7 +264,7 @@ def make_document() -> None:
         PageBreak(),
 
         p("02  录入发票、离线 OCR 与智能分类", h1),
-        p("支持 JPG、PNG、BMP、TIFF、WEBP、PDF、TXT 和 ZIP。文字识别、费用分类和物品类型判断均在本机完成；发票图片与数据库保存在软件文件夹内。"),
+        p("支持 JPG、PNG、BMP、TIFF、WEBP、PDF、TXT、OFD、ZIP 和多文件直接导入。文字识别、费用分类和物品类型判断均在本机完成；发票图片与数据库保存在软件文件夹内。"),
         process([
             ("上传", "选择图片或 PDF"),
             ("识别", "点击离线 OCR"),
@@ -278,14 +278,14 @@ def make_document() -> None:
             "选择付款成员和分摊方式；报销金额、报销日期、备注均可留空。",
             "保存后驾驶舱、统计和 AA 净额立即更新。",
         ]),
-        p("ZIP 批量导入", h2),
+        p("ZIP 与多文件批量导入", h2),
         *bullets([
-            "将多份发票文件直接放入 ZIP；可包含子文件夹。",
-            "上传 ZIP 后，系统逐份建立草稿，并行执行识别。",
+            "可将多份发票放入 ZIP，也可在文件选择框中一次选中多个图片、PDF、TXT 或 OFD。",
+            "系统逐份建立草稿并行识别，随机赛车随 0～100% 进度条移动和填充。",
             "识别完成后逐条核对并补充付款人、分类和分摊成员。",
-            "系统会拦截目录穿越和异常压缩比文件，避免恶意压缩包写出附件目录。",
+            "结束提示成功发票数量与识别总金额；ZIP 同时执行目录穿越和异常压缩比检查。",
         ]),
-        callout("容量与速度", "软件没有人为设置的固定附件大小或数量上限。实际批量规模取决于磁盘、内存和 CPU。建议按月或按采购批次打包；OCR 工作线程默认 2 个，可通过运行参数调整为 1～4 个。"),
+        callout("容量与速度", "软件没有人为设置的固定附件大小或数量上限。OCR 会后台预热，根据 CPU 自动选择 1～4 个工作线程，并限制超大图片检测边长；重复附件可复用结果。实际速度仍取决于 CPU、磁盘和票面清晰度。"),
         PageBreak(),
         p("03  智能分类与识别核对", h1),
         p("系统在 OCR 完成后给出费用分类和物品类型建议。建议用于加快录入，最终账务口径由人工确认。"),
@@ -409,8 +409,8 @@ def make_document() -> None:
             "不再使用的项目可停用，必要时可重新启用；历史发票和统计仍会保留。",
         ]),
         callout("公共展示", "使用 viewer 账号投屏或给指导教师查看。该账号能浏览驾驶舱、发票、AA 和分类统计，也能导出 CSV，但不能修改、删除、回溯或管理账号。"),
-        p("筛选与导出", h2),
-        p("在发票台账可按关键词、分类、报销状态和日期检索；在分类统计可设置起止日期。CSV 使用 UTF-8 BOM，可直接在 Excel 中打开中文内容。"),
+        p("多选、追溯与导出", h2),
+        p("在发票台账可按关键词、分类、报销状态和日期检索，并查看开票日期、上传日期、提交人和提交账号。勾选多条记录后可批量改分类、改报销状态、删除或仅导出选中项。CSV 使用 UTF-8 BOM，可直接在 Excel 中打开中文；导出完成会提示数量与合计金额。"),
         PageBreak(),
 
         p("07  动态外观、数据与备份", h1),
@@ -422,10 +422,13 @@ def make_document() -> None:
             ("预览保存", "调遮罩保证文字清晰"),
         ]),
         *bullets([
+            "清晰深色、护眼浅色和赛车蓝高对比三种模式可随时切换，每台电脑独立记忆。",
+            "常用操作支持自定义快捷键；保存时会检查冲突，也可清除单项或恢复默认。",
             "登录轮播可维护标题、顺序、单张时长，并选择淡入淡出或滑动切换。",
             "密码框右侧可显示或隐藏密码；退出登录后自动恢复隐藏。",
             "Wallpaper Engine 扫描会查找 Steam 创意工坊和本地项目；图片、GIF、MP4、WEBM 可直接播放。",
             "场景、网页和应用型壁纸使用预览图；导入不会修改 Steam 或创意工坊文件。",
+            "批量等待动画每次随机使用一辆赛车；管理员可上传透明 PNG、删除旧图或恢复默认素材。",
         ]),
         p("本地数据位置", h2),
         grid(
@@ -445,9 +448,7 @@ def make_document() -> None:
             "每周至少一次；赛前、集中采购后、批量回溯前额外备份。",
             "恢复备份会替换当前业务数据，请先再导出一份现状备份。",
         ]),
-        callout("迁移电脑", "先关闭软件，再复制整个“Windows软件”文件夹。不要只复制 EXE；数据库、附件和 OCR 模型均为独立目录。复制完成后从新文件夹启动即可。", RED),
-        p("演示数据", h2),
-        p("首次启动含 5 条演示发票和 8 位示例成员。熟悉功能后，管理员可在系统设置中一键清除演示发票。成员与账号不会随演示发票一起删除，可继续修改后使用。"),
+        callout("迁移电脑与演示数据", "先关闭软件，再复制整个“Windows软件”文件夹，不要只复制 EXE。首次启动含 5 条演示发票和 8 位示例成员；熟悉功能后可在系统设置中一键清除演示发票，成员与账号不会一起删除。", RED),
         PageBreak(),
 
         p("08  日志、版本与管理员回溯", h1),
@@ -521,7 +522,13 @@ def make_document() -> None:
         callout("生产安全", "必须使用 HTTPS；同步密钥只保存在服务器环境文件和管理员设置中。定期备份 deploy/runtime。服务器尚未准备好时，保持本地模式，不影响任何核心功能。", RED),
         PageBreak(),
 
-        p("10  故障处理与交付检查", h1),
+        p("10  软件更新、故障处理与交付检查", h1),
+        p("无损更新", h2),
+        *bullets([
+            "V2.2.0 及以后由管理员进入“系统设置 → 软件更新”，检查后下载并安装最新 GitHub Release。",
+            "软件校验 SHA-256 后退出并替换程序，保留 data、uploads、models、tmp 和 .env；替换失败会恢复旧程序。",
+            "V2.1.1 及以前先关闭软件并解压一次 WindowsUpdate 桥接补丁到原目录；以后即可使用设置内自动更新。",
+        ]),
         grid(
             ["现象", "处理"],
             [
@@ -532,6 +539,7 @@ def make_document() -> None:
                 ["视频背景卡顿", "换用较短的 1080p MP4/WEBM，或使用静态预览图"],
                 ["桌面窗口未打开", "检查安全软件；浏览器访问 http://127.0.0.1:8765"],
                 ["默认端口被占用", "桌面软件会自动选择另一个本机端口"],
+                ["检查更新连接失败", "确认可访问 api.github.com，或手动覆盖 WindowsUpdate 补丁"],
                 ["同步提示连接失败", "检查 HTTPS 地址、容器状态、证书和同步密钥"],
                 ["成员忘记密码", "管理员在成员与账号页面重设密码"],
                 ["管理员忘记密码", "使用最近完整备份恢复；不要直接改数据库"],
@@ -539,7 +547,8 @@ def make_document() -> None:
             ],
             [55, 111],
         ),
-        p("正式启用检查表", h2),
+        PageBreak(),
+        p("11  正式启用交付检查", h1),
         *bullets([
             "管理员账号和密码已修改，默认公共账号是否继续启用已确认。",
             "真实成员姓名、部门和账号已建立，未参与成员已停用。",
@@ -547,8 +556,10 @@ def make_document() -> None:
             "演示发票已清除，驾驶舱金额归零或与真实数据一致。",
             "完成一张发票的上传、OCR、智能分类、指定成员分摊和保存测试。",
             "完成背景更换和登录页轮播测试，确保文字在动态媒体上清晰。",
+            "完成多文件导入、赛车 100% 进度、批量选择和 CSV 数量/金额提示测试。",
             "完成一条 AA 还款登记与撤销测试。",
             "导出并妥善保存第一份完整备份。",
+            "检查软件更新页面，并保存 WindowsUpdate 补丁作为离线升级备用。",
             "若启用云端，已完成 Windows 与服务器双向修改测试。",
         ]),
         Spacer(1, 5 * mm),

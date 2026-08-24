@@ -4,9 +4,9 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#07101b">
-  <title>燕翔车队经费管理系统 V2.1.1</title>
+  <title>燕翔车队经费管理系统 V2.2.0</title>
   <link rel="icon" href="/static/assets/team-logo.png">
-  <link rel="stylesheet" href="/static/app.css?v=2.1.1">
+  <link rel="stylesheet" href="/static/app.css?v=2.2.0">
 </head>
 <body>
   <div id="backgroundLayer" class="background-layer"><video id="appBackgroundVideo" muted loop autoplay playsinline></video></div>
@@ -30,7 +30,7 @@
       <div class="login-brand">
         <img src="/static/assets/team-logo.png" alt="燕翔车队队标">
         <div>
-          <p class="eyebrow">赛车运营 · V2.1.1</p>
+          <p class="eyebrow">赛车运营 · V2.2.0</p>
           <h1><span id="loginTeamName">燕翔车队</span><br><span>经费管理系统</span></h1>
         </div>
       </div>
@@ -71,7 +71,7 @@
         <div id="syncLamp" class="status-lamp"></div>
         <div><strong id="syncLabel">本地模式</strong><small id="syncDetail">数据安全保存在本机</small></div>
       </div>
-      <div class="sidebar-foot"><span>燕翔车队经费</span><span id="versionLabel">V2.1.1</span></div>
+      <div class="sidebar-foot"><span>燕翔车队经费</span><span id="versionLabel">V2.2.0</span></div>
     </aside>
 
     <div class="content-shell">
@@ -125,7 +125,7 @@
         <section id="invoicesSection" class="view-section">
           <div class="section-toolbar">
             <div><p class="eyebrow">发票与票据</p><h3>发票台账</h3><p>所有票据、垫付与报销状态统一管理。</p></div>
-            <div class="toolbar-actions"><button id="batchImportBtn" class="btn secondary write-only">批量 ZIP 导入</button><a class="btn secondary" href="/api/export/csv">导出 CSV</a><button id="invoiceAddBtn" class="btn primary write-only">＋ 新增记录</button></div>
+            <div class="toolbar-actions"><button id="batchImportBtn" class="btn secondary write-only">批量导入</button><button id="exportCsvBtn" type="button" class="btn secondary">导出 CSV</button><button id="invoiceAddBtn" class="btn primary write-only">＋ 新增记录</button></div>
           </div>
           <article class="panel filter-panel">
             <div class="filter-grid">
@@ -138,7 +138,8 @@
           </article>
           <article class="panel ledger-panel">
             <div class="ledger-summary"><strong id="invoiceCount">0 条记录</strong><span id="invoiceSum">合计 ¥0.00</span></div>
-            <div class="table-scroll"><table class="ledger-table"><thead><tr><th>日期</th><th>发票 / 销售方</th><th>分类</th><th>垫付与分摊</th><th>资金来源</th><th>报销进度</th><th class="numeric">金额</th><th>操作</th></tr></thead><tbody id="invoiceTable"></tbody></table></div>
+            <div id="batchSelectionBar" class="batch-selection-bar hidden"><strong id="batchSelectedCount">已选择 0 张</strong><span id="batchSelectedSum">合计 ¥0.00</span><div><button id="batchExportSelectedBtn" type="button" class="btn secondary">导出所选</button><button id="batchEditSelectedBtn" type="button" class="btn secondary write-only">批量修改</button><button id="batchDeleteSelectedBtn" type="button" class="btn danger subtle write-only">批量删除</button><button id="batchClearSelectionBtn" type="button" class="btn secondary">取消选择</button></div></div>
+            <div class="table-scroll"><table class="ledger-table"><thead><tr><th class="select-cell"><input id="selectAllInvoices" type="checkbox" aria-label="全选当前发票"></th><th>开票 / 上传 / 提交</th><th>发票 / 销售方</th><th>分类</th><th>垫付与分摊</th><th>资金来源</th><th>报销进度</th><th class="numeric">金额</th><th>操作</th></tr></thead><tbody id="invoiceTable"></tbody></table></div>
           </article>
         </section>
 
@@ -181,6 +182,7 @@
             <article class="panel setting-card" data-admin><div class="setting-icon">备份</div><div><h3>备份与恢复</h3><p>完整备份数据库和全部附件。</p><div class="inline-actions"><a class="btn secondary" href="/api/admin/backup">下载备份</a><label class="btn danger subtle">恢复备份<input id="restoreBackupInput" type="file" accept=".zip" hidden></label></div></div></article>
             <article class="panel setting-card" data-admin><div class="setting-icon">演示</div><div><h3>演示数据</h3><p>只清除初始演示记录，不影响正式数据。</p><button id="deleteDemoBtn" class="btn danger subtle">清除演示数据</button></div></article>
             <article class="panel setting-card"><div class="setting-icon">识别</div><div><h3>离线文字识别</h3><p>优先读取 PDF 文本，扫描件使用本地识别引擎，不上传第三方。</p><span class="setting-state good">本机运行</span></div></article>
+            <article class="panel setting-card"><div class="setting-icon">版本</div><div><h3>更新日志与无损自动更新</h3><p>从任意已支持更新的旧版一键升级；数据库、附件、账号与界面设置保持不变。</p><button id="openUpdateBtn" class="btn secondary">版本与更新</button></div></article>
           </div>
         </section>
       </main>
@@ -211,6 +213,7 @@
     <form id="invoiceForm" class="modal-card">
       <header><div><p class="eyebrow">发票录入</p><h3 id="invoiceDialogTitle">新增发票记录</h3></div><button type="button" class="dialog-close" data-close="invoiceDialog">×</button></header>
       <input id="invoiceId" type="hidden"><input id="invoiceVersion" type="hidden"><input id="attachmentId" type="hidden"><input id="ocrText" type="hidden"><input id="ocrConfidence" type="hidden"><input id="ocrStatus" type="hidden">
+      <div id="invoiceMetadata" class="invoice-metadata hidden"></div>
       <div class="upload-ribbon">
         <label class="upload-zone"><input id="invoiceFile" type="file" accept="image/*,.pdf,.ofd,.txt"><span class="upload-symbol">⇧</span><span><b>上传发票附件</b><small>图片 / PDF / OFD / TXT，无固定大小限制</small></span></label>
         <div class="ocr-panel"><span id="fileState">尚未选择附件</span><button id="runOcrBtn" type="button" class="btn secondary" disabled>离线识别</button><div class="ocr-progress"><i id="ocrProgressBar"></i></div><small id="ocrMessage">电子 PDF 将优先直接读取文字</small></div>
@@ -244,12 +247,27 @@
 
   <dialog id="batchDialog" class="modal">
     <form id="batchForm" class="modal-card">
-      <header><div><p class="eyebrow">批量导入</p><h3>ZIP 批量导入</h3></div><button type="button" class="dialog-close" data-close="batchDialog">×</button></header>
-      <label class="upload-zone batch-upload"><input id="batchFile" type="file" accept=".zip" required><span class="upload-symbol">ZIP</span><span><b>选择发票压缩包</b><small>自动安全解压并并行排队识别，文件数量不设固定上限</small></span></label>
+      <header><div><p class="eyebrow">批量导入</p><h3>ZIP 或多张发票导入</h3></div><button type="button" class="dialog-close" data-close="batchDialog">×</button></header>
+      <label class="upload-zone batch-upload"><input id="batchFile" type="file" accept=".zip,image/*,.pdf,.ofd,.txt" multiple required><span class="upload-symbol">多选</span><span><b>选择 ZIP 或多个发票文件</b><small>支持图片、PDF、OFD、TXT；自动并行识别并汇总数量和金额</small></span></label>
       <div class="form-grid two"><label><span>默认分类</span><select id="batchCategory"></select></label><label><span>默认垫付成员</span><select id="batchPayer"></select></label><label><span>默认资金来源</span><select id="batchSource"></select></label><label><span>默认承担方式</span><select id="batchBurden"><option value="team_aa">全队 AA</option><option value="specified_split">指定成员</option><option value="self_paid">个人承担</option></select></label></div>
       <label class="full-label"><span>批次备注</span><textarea id="batchNote" rows="2" placeholder="例如：8 月电气组采购批次"></textarea></label>
       <div id="batchResult" class="batch-result"></div>
       <footer><button type="button" class="btn secondary" data-close="batchDialog">取消</button><button class="btn primary" type="submit">开始批量导入</button></footer>
+    </form>
+  </dialog>
+
+  <dialog id="batchActionDialog" class="modal small-modal">
+    <form id="batchActionForm" class="modal-card">
+      <header><div><p class="eyebrow">批量修改</p><h3>修改所选发票</h3></div><button type="button" class="dialog-close" data-close="batchActionDialog">×</button></header>
+      <p id="batchActionSummary" class="batch-action-summary"></p>
+      <label class="full-label"><span>修改项目</span><select id="batchActionType"><option value="category">费用分类</option><option value="status">报销状态</option></select></label>
+      <label id="batchCategoryActionWrap" class="full-label"><span>目标分类</span><select id="batchActionCategory"></select></label>
+      <div id="batchStatusActionWrap" class="hidden">
+        <label class="full-label"><span>目标状态</span><select id="batchActionStatus"><option value="pending">未报销</option><option value="partial">部分报销</option><option value="reimbursed">已报销</option></select></label>
+        <label id="batchRatioWrap" class="full-label hidden"><span>统一报销比例 <b id="batchRatioValue">50%</b></span><input id="batchActionRatio" type="range" min="1" max="99" value="50"></label>
+        <label class="full-label"><span>报销日期</span><input id="batchActionDate" type="date"></label>
+      </div>
+      <footer><button type="button" class="btn secondary" data-close="batchActionDialog">取消</button><button class="btn primary">应用到所选发票</button></footer>
     </form>
   </dialog>
 
@@ -314,6 +332,11 @@
           <div id="loginSlideEditor" class="login-slide-editor"><div class="empty-state">尚未添加登录轮播媒体</div></div>
         </section>
 
+        <section class="appearance-pane">
+          <div class="appearance-heading"><div><b>等待进度赛车</b><small>每次任务随机选择一辆；可上传透明 PNG、GIF 或普通图片替换</small></div><div class="inline-actions"><label class="btn secondary media-upload-btn">添加赛车<input id="loadingCarFiles" type="file" accept="image/*,.gif" multiple hidden></label><button id="resetLoadingCarsBtn" type="button" class="btn danger subtle">恢复默认</button></div></div>
+          <div id="loadingCarEditor" class="loading-car-editor"></div>
+        </section>
+
         <section class="appearance-pane wallpaper-pane">
           <div class="appearance-heading"><div><b>Wallpaper Engine 壁纸库</b><small>自动读取 Steam 创意工坊；场景和网页壁纸使用其预览图</small></div><button id="scanWallpapersBtn" type="button" class="btn secondary">扫描壁纸库</button></div>
           <div id="wallpaperStatus" class="wallpaper-status">点击“扫描壁纸库”读取本机内容。</div>
@@ -345,8 +368,25 @@
 
   <dialog id="syncDialog" class="modal small-modal"><form id="syncForm" class="modal-card"><header><div><p class="eyebrow">云端同步</p><h3>云端自动同步</h3></div><button type="button" class="dialog-close" data-close="syncDialog">×</button></header><label class="switch-row"><span><b>启用自动同步</b><small>断网时写入本地队列，联网后自动双向同步</small></span><input id="syncEnabled" type="checkbox"></label><label class="full-label"><span>云端服务器地址</span><input id="remoteUrl" type="url" placeholder="https://finance.example.com"></label><label class="full-label"><span>同步密钥</span><input id="syncSecret" type="password" placeholder="已配置时可留空"><small>必须与 Linux 云端部署配置一致</small></label><div id="syncDialogStatus" class="sync-dialog-status"></div><footer><button id="syncNowBtn" type="button" class="btn secondary">立即同步</button><button class="btn primary">保存配置</button></footer></form></dialog>
 
+  <dialog id="updateDialog" class="modal">
+    <div class="modal-card">
+      <header><div><p class="eyebrow">版本管理</p><h3>更新日志与自动更新</h3></div><button type="button" class="dialog-close" data-close="updateDialog">×</button></header>
+      <div class="update-current"><div><span>当前版本</span><strong id="updateCurrentVersion">V2.2.0</strong></div><label class="mini-switch"><input id="autoUpdateCheck" type="checkbox" checked><span>启动后自动检查</span></label></div>
+      <div class="update-actions"><button id="checkUpdateBtn" type="button" class="btn secondary">检查 GitHub 新版本</button><a id="updateReleaseLink" class="btn secondary hidden" target="_blank" rel="noopener">查看发布页面</a><button id="installUpdateBtn" type="button" class="btn primary hidden">一键更新到最新版</button></div>
+      <div id="updateStatus" class="update-status">正在读取本地更新日志……</div>
+      <div id="changelogList" class="changelog-list"></div>
+      <footer><button type="button" class="btn primary" data-close="updateDialog">完成</button></footer>
+    </div>
+  </dialog>
+
   <div id="toastRegion" class="toast-region" aria-live="polite"></div>
-  <div id="loadingOverlay" class="loading-overlay hidden"><div class="loader-ring"></div><strong id="loadingText">正在处理</strong></div>
-  <script src="/static/app.js?v=2.1.1"></script>
+  <div id="loadingOverlay" class="loading-overlay hidden" role="status" aria-live="polite">
+    <div id="raceLoader" class="race-loader" style="--progress:0%;--car-shift:0%">
+      <div class="race-stage"><img id="loadingCar" src="/static/assets/loading-car-formula-1.png" alt="赛车任务进度"><div class="race-track"><i id="loadingProgressFill"></i></div></div>
+      <div class="race-loader-copy"><strong id="loadingText">正在处理</strong><b id="loadingPercent">0%</b></div>
+      <small id="loadingDetail">任务正在本机运行，请勿关闭软件</small>
+    </div>
+  </div>
+  <script src="/static/app.js?v=2.2.0"></script>
 </body>
 </html>

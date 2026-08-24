@@ -5,14 +5,23 @@ const state = {
   settings: {}, dashboard: null, invoices: [], users: [], currentView: "dashboard", socket: null,
   resizeTimer: null, publicSettings: {}, loginSlideTimer: null, loginSlideIndex: 0,
   loginActiveLayer: "A", appearanceSlides: [], appearanceBackground: null,
+  appearanceLoadingCars: [], selectedInvoiceIds: new Set(),
   wallpapers: [], classificationRules: [], decisionResolve: null,
   shortcuts: {}, shortcutDraft: {},
+  loadingTimer: null, loadingProgress: 0, loadingToken: 0, updateRelease: null,
+  version: "2.2.0", updateJobId: "",
 };
 
 const DISPLAY_MODE_KEY = "yanxiang-display-mode";
 const DISPLAY_MODES = new Set(["clear-dark", "light", "racing-blue"]);
 const DISPLAY_MODE_LABELS = { "clear-dark": "清晰深色", light: "护眼浅色", "racing-blue": "赛车蓝（高对比）" };
 const SHORTCUT_STORAGE_KEY = "yanxiang-shortcuts-v1";
+const AUTO_UPDATE_STORAGE_KEY = "yanxiang-auto-update-check";
+const LAST_UPDATE_CHECK_KEY = "yanxiang-last-update-check";
+const DEFAULT_LOADING_CARS = [
+  { id: "default_formula_1", title: "方程式赛车一", url: "/static/assets/loading-car-formula-1.png" },
+  { id: "default_formula_2", title: "方程式赛车二", url: "/static/assets/loading-car-formula-2.png" },
+];
 const SHORTCUT_DEFINITIONS = [
   { id: "new_invoice", label: "新增发票", description: "直接打开新增发票窗口", defaultKey: "Ctrl+N" },
   { id: "search_invoices", label: "搜索发票", description: "进入发票台账并定位搜索框", defaultKey: "Ctrl+F" },
@@ -36,7 +45,7 @@ const escapeHtml = (value) => String(value ?? "").replace(/[&<>'"]/g, (char) => 
 const roleLabel = (role) => ({ admin: "管理员", member: "成员", viewer: "公共只读" }[role] || role);
 const statusLabel = (status) => ({ pending: "未报销", partial: "部分报销", reimbursed: "已报销" }[status] || status);
 const burdenLabel = (type) => ({ team_aa: "全队 AA", specified_split: "指定成员", self_paid: "个人承担" }[type] || type);
-const actionLabel = (action) => ({ create: "新增", update: "修改", delete: "删除", login: "登录", logout: "退出", restore: "版本回溯", upload: "上传附件", seed: "初始化", archive: "停用", sync_apply: "同步应用", sync_conflict: "同步冲突", create_snapshot: "建立版本", delete_demo: "清除演示数据", batch_import: "批量导入", ocr_complete: "OCR 完成", change_credentials: "修改账号" }[action] || action);
+const actionLabel = (action) => ({ create: "新增", update: "修改", delete: "删除", login: "登录", logout: "退出", restore: "版本回溯", upload: "上传附件", seed: "初始化", archive: "停用", sync_apply: "同步应用", sync_conflict: "同步冲突", create_snapshot: "建立版本", delete_demo: "清除演示数据", batch_import: "批量导入", batch_delete: "批量删除", batch_category: "批量修改分类", batch_status: "批量修改状态", ocr_complete: "OCR 完成", change_credentials: "修改账号" }[action] || action);
 
 function savedDisplayMode() {
   try {
@@ -221,6 +230,25 @@ async function api(path, options = {}) {
   return payload;
 }
 
+function apiUpload(path, form, onProgress = () => {}) {
+  return new Promise((resolve, reject) => {
+    const request = new XMLHttpRequest();
+    request.open("POST", path, true); request.withCredentials = true; request.responseType = "json";
+    if (state.csrf) request.setRequestHeader("X-CSRF-Token", state.csrf);
+    request.upload.addEventListener("progress", (event) => {
+      if (event.lengthComputable) onProgress(Math.round(event.loaded / event.total * 100));
+    });
+    request.addEventListener("load", () => {
+      const payload = request.response || {};
+      if (request.status === 401) { showLogin(); reject(new Error("登录已失效，请重新登录")); return; }
+      if (request.status < 200 || request.status >= 300) { reject(new Error(payload.detail || payload.error || `请求失败 (${request.status})`)); return; }
+      resolve(payload);
+    });
+    request.addEventListener("error", () => reject(new Error("网络连接中断，文件尚未导入")));
+    request.send(form);
+  });
+}
+
 function toast(message, type = "success", duration = 3300) {
   const item = document.createElement("div");
   item.className = `toast ${type}`;
@@ -229,9 +257,43 @@ function toast(message, type = "success", duration = 3300) {
   setTimeout(() => item.remove(), duration);
 }
 
-function loading(show, text = "正在处理") {
-  $("loadingText").textContent = text;
-  $("loadingOverlay").classList.toggle("hidden", !show);
+function loadingCars() {
+  const configured = state.settings?.loading_cars || state.publicSettings?.loading_cars || [];
+  const valid = configured.filter((item) => item && (item.url || item.private_url));
+  return valid.length ? valid : DEFAULT_LOADING_CARS;
+}
+
+function setLoadingProgress(value, text = "", detail = "") {
+  const progress = Math.max(0, Math.min(100, Math.round(Number(value) || 0)));
+  state.loadingProgress = progress;
+  $("raceLoader").style.setProperty("--progress", `${progress}%`);
+  $("raceLoader").style.setProperty("--car-shift", `${-progress}%`);
+  $("loadingPercent").textContent = `${progress}%`;
+  if (text) $("loadingText").textContent = text;
+  if (detail) $("loadingDetail").textContent = detail;
+}
+
+function loading(show, text = "", progress = null, detail = "任务正在本机运行，请勿关闭软件", simulate = true) {
+  clearInterval(state.loadingTimer); state.loadingTimer = null;
+  if (!show) {
+    if ($("loadingOverlay").classList.contains("hidden")) return;
+    const token = state.loadingToken;
+    setLoadingProgress(100, text || $("loadingText").textContent, "处理完成");
+    setTimeout(() => { if (token === state.loadingToken) $("loadingOverlay").classList.add("hidden"); }, 320);
+    return;
+  }
+  state.loadingToken += 1;
+  const cars = loadingCars(), car = cars[Math.floor(Math.random() * cars.length)] || DEFAULT_LOADING_CARS[0];
+  $("loadingCar").src = car.private_url || car.url; $("loadingCar").alt = car.title || "赛车任务进度";
+  $("loadingOverlay").classList.remove("hidden");
+  setLoadingProgress(progress === null ? 3 : progress, text || "正在处理", detail);
+  if (simulate) {
+    state.loadingTimer = setInterval(() => {
+      if (state.loadingProgress >= 92) return;
+      const step = state.loadingProgress < 35 ? 3 : (state.loadingProgress < 70 ? 2 : 1);
+      setLoadingProgress(Math.min(92, state.loadingProgress + step));
+    }, 520);
+  }
 }
 
 function showLogin() {
@@ -326,7 +388,7 @@ function applyTheme() {
     if (video.getAttribute("src") !== mediaUrl) video.src = mediaUrl;
     video.classList.add("active"); video.play().catch(() => {});
   } else { video.pause(); video.removeAttribute("src"); video.load(); video.classList.remove("active"); }
-  document.title = `${settings.team_name || "燕翔车队"} · 经费管理系统 V2.1.1`;
+  document.title = `${settings.team_name || "燕翔车队"} · 经费管理系统 V2.2.0`;
 }
 
 function applyAccess() {
@@ -370,11 +432,14 @@ async function loadBootstrap() {
   state.settings = data.settings || {};
   state.dashboard = data.dashboard;
   state.sync = data.sync || {};
+  state.version = data.version || "2.2.0";
   $("versionLabel").textContent = `V${data.version}`;
+  $("updateCurrentVersion").textContent = `V${state.version}`;
   state.publicSettings = state.settings; applyTheme(); applyAccess(); renderSync(state.sync); renderReferenceOptions(); renderDashboard(); showApp(); connectSocket();
   if (state.user.must_change_password) {
     setTimeout(() => { toast("首次登录请先修改账号与密码", "error", 5000); openCredentials(); }, 350);
   }
+  scheduleAutomaticUpdateCheck();
 }
 
 function renderReferenceOptions() {
@@ -556,14 +621,44 @@ function colorTag(label, color) { return `<span class="color-tag" style="--tag-c
 function statusTag(status) { return `<span class="status-tag ${escapeHtml(status)}">${escapeHtml(statusLabel(status))}</span>`; }
 function emptyRow(columns, text) { return `<tr><td colspan="${columns}" class="empty-state">${escapeHtml(text)}</td></tr>`; }
 
-async function loadInvoices() {
+function invoiceFilterParams() {
   const params = new URLSearchParams();
   const mappings = [["invoiceSearch", "search"], ["invoiceStatusFilter", "status"], ["invoiceCategoryFilter", "category_id"], ["invoiceSourceFilter", "source_id"]];
   mappings.forEach(([id, key]) => { if ($(id).value) params.set(key, $(id).value); });
+  return params;
+}
+
+async function loadInvoices() {
+  const params = invoiceFilterParams();
   const data = await api(`/api/invoices?${params}`); state.invoices = data.items || []; renderInvoices();
 }
 
+function selectedInvoices() { return state.invoices.filter((item) => state.selectedInvoiceIds.has(item.id)); }
+
+function renderInvoiceSelection() {
+  const selected = selectedInvoices();
+  const total = selected.reduce((sum, item) => sum + Number(item.total_amount || 0), 0);
+  $("batchSelectionBar").classList.toggle("hidden", !selected.length);
+  $("batchSelectedCount").textContent = `已选择 ${selected.length} 张`;
+  $("batchSelectedSum").textContent = `合计 ${money(total)}`;
+  const allSelected = state.invoices.length > 0 && state.invoices.every((item) => state.selectedInvoiceIds.has(item.id));
+  $("selectAllInvoices").checked = allSelected;
+  $("selectAllInvoices").indeterminate = selected.length > 0 && !allSelected;
+  $$("#invoiceTable tr[data-invoice-row]").forEach((row) => row.classList.toggle("invoice-row-selected", state.selectedInvoiceIds.has(row.dataset.invoiceRow)));
+  applyAccess();
+}
+
+function clearInvoiceSelection(render = true) {
+  state.selectedInvoiceIds.clear();
+  if (render) {
+    $$("#invoiceTable .invoice-select").forEach((input) => { input.checked = false; });
+    renderInvoiceSelection();
+  }
+}
+
 function renderInvoices() {
+  const validIds = new Set(state.invoices.map((item) => item.id));
+  state.selectedInvoiceIds = new Set([...state.selectedInvoiceIds].filter((id) => validIds.has(id)));
   const sum = state.invoices.reduce((total, item) => total + Number(item.total_amount || 0), 0);
   $("invoiceCount").textContent = `${state.invoices.length} 条记录`; $("invoiceSum").textContent = `合计 ${money(sum)}`;
   $("invoiceTable").innerHTML = state.invoices.map((item) => {
@@ -571,8 +666,10 @@ function renderInvoices() {
     const actions = canWrite() ? `${attachment}<button class="row-action" data-invoice-action="edit" data-id="${escapeHtml(item.id)}" title="编辑">✎</button><button class="row-action delete" data-invoice-action="delete" data-id="${escapeHtml(item.id)}" title="删除">×</button>` : `${attachment}<button class="row-action" data-invoice-action="view" data-id="${escapeHtml(item.id)}" title="查看">⌕</button>`;
     const splitNames = item.splits.map((split) => split.member_name).join("、");
     const progress = item.total_amount > 0 ? Math.round(item.reimbursed_amount / item.total_amount * 100) : 0;
-    return `<tr>
-      <td><span class="cell-main">${escapeHtml(item.invoice_date)}</span><span class="cell-sub">${escapeHtml(item.invoice_no || "无发票号")}</span></td>
+    const checked = state.selectedInvoiceIds.has(item.id);
+    return `<tr data-invoice-row="${escapeHtml(item.id)}" class="${checked ? "invoice-row-selected" : ""}">
+      <td class="select-cell"><input class="invoice-select" type="checkbox" data-id="${escapeHtml(item.id)}" aria-label="选择 ${escapeHtml(item.vendor || "该发票")}" ${checked ? "checked" : ""}></td>
+      <td><span class="cell-main">开票 ${escapeHtml(dateText(item.invoice_date))}</span><span class="cell-sub">上传 ${escapeHtml(dateText(item.uploaded_at || item.created_at))} · ${escapeHtml(item.created_by_name || "系统任务")}</span></td>
       <td><span class="cell-main">${escapeHtml(item.vendor || "待补充")}</span><span class="cell-sub">${escapeHtml(item.product_type)}${item.ocr_status === "queued" ? " · OCR排队中" : ""}</span></td>
       <td>${colorTag(item.category_name || "未分类", item.category_color || "#9aa7b7")}</td>
       <td><span class="cell-main">${escapeHtml(item.payer_name || "-")} 垫付</span><span class="cell-sub">${escapeHtml(burdenLabel(item.burden_type))} · ${escapeHtml(splitNames || "-")}</span></td>
@@ -580,7 +677,50 @@ function renderInvoices() {
       <td>${statusTag(item.reimbursement_status)}<span class="cell-sub">${progress}% · ${money(item.reimbursed_amount)}</span></td>
       <td class="numeric amount-cell">${money(item.total_amount)}</td><td><div class="row-actions">${actions}</div></td>
     </tr>`;
-  }).join("") || emptyRow(8, "没有符合条件的记录");
+  }).join("") || emptyRow(9, "没有符合条件的记录");
+  renderInvoiceSelection();
+}
+
+async function downloadCsv(ids = []) {
+  if (ids.length === 0 && state.invoices.length === 0) return toast("当前没有可导出的发票", "error");
+  const suggestedName = `燕翔车队发票_${nowDate()}.csv`;
+  let fileHandle = null;
+  if (window.showSaveFilePicker) {
+    try {
+      fileHandle = await window.showSaveFilePicker({ suggestedName, types: [{ description: "CSV 表格", accept: { "text/csv": [".csv"] } }] });
+    } catch (error) {
+      if (error?.name === "AbortError") return;
+    }
+  }
+  loading(true, "正在生成 CSV", 10, "正在汇总发票数量与金额");
+  try {
+    const options = ids.length ? {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "Content-Type": "application/json", "X-CSRF-Token": state.csrf },
+      body: JSON.stringify({ ids }),
+    } : { credentials: "same-origin" };
+    const path = ids.length ? "/api/export/csv" : `/api/export/csv?${invoiceFilterParams()}`;
+    const response = await fetch(path, options);
+    if (response.status === 401) { showLogin(); throw new Error("登录已失效，请重新登录"); }
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({}));
+      throw new Error(error.detail || `CSV 导出失败 (${response.status})`);
+    }
+    setLoadingProgress(72, "正在写入 CSV 文件");
+    const blob = await response.blob();
+    if (fileHandle) {
+      const writable = await fileHandle.createWritable(); await writable.write(blob); await writable.close();
+    } else {
+      const url = URL.createObjectURL(blob), link = document.createElement("a");
+      link.href = url; link.download = suggestedName; link.style.display = "none";
+      document.body.appendChild(link); link.click(); link.remove(); setTimeout(() => URL.revokeObjectURL(url), 30000);
+    }
+    const count = Number(response.headers.get("X-Export-Count") || ids.length || state.invoices.length);
+    const total = Number(response.headers.get("X-Export-Total") || selectedInvoices().reduce((sum, item) => sum + Number(item.total_amount || 0), 0));
+    toast(`CSV 导出成功：${count} 张发票，合计 ${money(total)}`, "success", 6000);
+  } catch (error) { toast(error.message, "error", 6000); }
+  finally { loading(false); }
 }
 
 function renderSplitMembers(selected = [], weights = {}) {
@@ -609,6 +749,7 @@ function resetInvoiceForm() {
   $("invoicePayer").value = preferredPayer || ""; $("fileState").textContent = "尚未选择附件"; $("runOcrBtn").disabled = true;
   $("ocrMessage").textContent = "电子 PDF 将优先直接读取文字"; $("ocrProgressBar").style.width = "0";
   $("classificationHint").textContent = ""; $("classificationHint").classList.add("hidden");
+  $("invoiceMetadata").textContent = ""; $("invoiceMetadata").classList.add("hidden");
   document.querySelector('input[name="burdenType"][value="team_aa"]').checked = true; $("splitMode").value = "equal";
   renderSplitMembers(state.members.filter((item) => item.active).map((item) => item.id)); updateReimbursementStatus();
   $("invoiceDialogTitle").textContent = "新增发票记录"; setInvoiceReadonly(false);
@@ -635,6 +776,8 @@ async function openInvoice(id, readonly = false) {
   const weights = Object.fromEntries(item.splits.map((split) => [split.member_id, Math.max(.01, split.share_amount)]));
   renderSplitMembers(item.splits.map((split) => split.member_id), weights);
   if (item.attachment_id) { $("fileState").textContent = item.attachment_name || "已关联附件"; $("runOcrBtn").disabled = false; }
+  $("invoiceMetadata").innerHTML = `<span><b>开票日期</b>${escapeHtml(dateText(item.invoice_date))}</span><span><b>上传日期</b>${escapeHtml(dateText(item.uploaded_at || item.created_at))}</span><span><b>提交人</b>${escapeHtml(item.created_by_name || "系统任务")}${item.created_by_username ? `（${escapeHtml(item.created_by_username)}）` : ""}</span>`;
+  $("invoiceMetadata").classList.remove("hidden");
   $("invoiceDialogTitle").textContent = readonly ? "查看发票记录" : "编辑发票记录"; updateReimbursementStatus(); setInvoiceReadonly(readonly); $("invoiceDialog").showModal();
 }
 
@@ -722,31 +865,105 @@ async function deleteInvoiceRecord(id) {
   catch (error) { toast(error.message, "error"); }
 }
 
-async function submitBatch(event) {
-  event.preventDefault(); const file = $("batchFile").files[0]; if (!file) return;
-  const form = new FormData(); form.append("file", file); form.append("category_id", $("batchCategory").value); form.append("payer_member_id", $("batchPayer").value);
-  form.append("funding_source_id", $("batchSource").value); form.append("burden_type", $("batchBurden").value); form.append("note", $("batchNote").value);
-  form.append("split_member_ids", JSON.stringify(state.members.filter((item) => item.active).map((item) => item.id)));
-  loading(true, "正在解压并建立 OCR 队列");
+function updateBatchActionVisibility() {
+  const statusMode = $("batchActionType").value === "status";
+  $("batchCategoryActionWrap").classList.toggle("hidden", statusMode);
+  $("batchStatusActionWrap").classList.toggle("hidden", !statusMode);
+  const partial = statusMode && $("batchActionStatus").value === "partial";
+  $("batchRatioWrap").classList.toggle("hidden", !partial);
+  $("batchRatioValue").textContent = `${$("batchActionRatio").value}%`;
+}
+
+function openBatchActionDialog() {
+  const selected = selectedInvoices(); if (!selected.length) return toast("请先勾选发票", "error");
+  const categoryOptions = state.categories.filter((item) => item.active && !item.deleted_at).map((item) => `<option value="${escapeHtml(item.id)}">${escapeHtml(item.name)}</option>`).join("");
+  $("batchActionCategory").innerHTML = `<option value="">未分类</option>${categoryOptions}`;
+  $("batchActionType").value = "category"; $("batchActionStatus").value = "pending"; $("batchActionRatio").value = "50"; $("batchActionDate").value = nowDate();
+  $("batchActionSummary").textContent = `将修改 ${selected.length} 张发票，合计 ${money(selected.reduce((sum, item) => sum + Number(item.total_amount || 0), 0))}。修改前会自动建立回溯版本。`;
+  updateBatchActionVisibility(); $("batchActionDialog").showModal();
+}
+
+async function submitBatchAction(event) {
+  event.preventDefault(); const ids = [...state.selectedInvoiceIds]; if (!ids.length) return;
+  const action = $("batchActionType").value;
+  const body = action === "category"
+    ? { ids, action, category_id: $("batchActionCategory").value }
+    : { ids, action, status: $("batchActionStatus").value, reimbursement_ratio: Number($("batchActionRatio").value), reimbursement_date: $("batchActionDate").value };
+  loading(true, "正在批量修改发票", 5, `共 ${ids.length} 张发票`, false);
   try {
-    const result = await api("/api/import/zip", { method: "POST", body: form });
-    $("batchResult").textContent = `已导入 ${result.count} 个文件并建立草稿；${result.skipped.length} 个文件被跳过。OCR 将在后台依次完成。`;
-    toast(`批量导入完成：${result.count} 条记录`); await loadInvoices();
-    if (result.jobs.length) pollBatchJobs(result.jobs.map((item) => item.job_id));
-  } catch (error) { $("batchResult").textContent = error.message; toast(error.message, "error", 5000); }
+    setLoadingProgress(35, "正在建立回溯版本");
+    const result = await api("/api/invoices/batch-action", { method: "POST", body });
+    setLoadingProgress(92, "正在刷新发票台账");
+    $("batchActionDialog").close(); clearInvoiceSelection(false); await loadInvoices();
+    toast(`批量修改完成：成功 ${result.changed_count} 张${result.skipped_count ? `，跳过 ${result.skipped_count} 张` : ""}`, "success", 5000);
+  } catch (error) { toast(error.message, "error", 6000); }
   finally { loading(false); }
 }
 
-async function pollBatchJobs(jobIds) {
-  let remaining = [...jobIds];
-  for (let round = 0; round < 900 && remaining.length; round++) {
-    await new Promise((resolve) => setTimeout(resolve, 1800));
-    const results = await Promise.all(remaining.map((id) => api(`/api/ocr/jobs/${encodeURIComponent(id)}`).catch(() => ({ status: "failed" }))));
-    remaining = remaining.filter((_, index) => !["done", "failed"].includes(results[index].status));
-    $("batchResult").textContent = `OCR 处理中：已完成 ${jobIds.length - remaining.length}/${jobIds.length}`;
+async function deleteSelectedInvoices() {
+  const selected = selectedInvoices(); if (!selected.length) return;
+  const total = selected.reduce((sum, item) => sum + Number(item.total_amount || 0), 0);
+  const accepted = await confirmAction(`即将删除 ${selected.length} 张发票，合计 ${money(total)}。系统会先建立回溯版本，管理员之后仍可恢复。`, { title: "批量删除发票", confirmText: `删除 ${selected.length} 张`, tone: "danger" });
+  if (!accepted) return;
+  loading(true, "正在批量删除发票", 8, `共 ${selected.length} 张发票`, false);
+  try {
+    const result = await api("/api/invoices/batch-action", { method: "POST", body: { ids: selected.map((item) => item.id), action: "delete" } });
+    setLoadingProgress(92, "正在刷新发票台账"); clearInvoiceSelection(false); await loadInvoices();
+    toast(`已删除 ${result.changed_count} 张发票，合计 ${money(result.total_amount)}`, "success", 5000);
+  } catch (error) { toast(error.message, "error", 6000); }
+  finally { loading(false); }
+}
+
+async function submitBatch(event) {
+  event.preventDefault(); const files = [...$("batchFile").files]; if (!files.length) return;
+  const zipFiles = files.filter((file) => file.name.toLowerCase().endsWith(".zip"));
+  if (zipFiles.length && (zipFiles.length !== 1 || files.length !== 1)) return toast("ZIP 压缩包不能与其他文件同时导入，请分成两次操作", "error", 5000);
+  const form = new FormData();
+  if (zipFiles.length) form.append("file", zipFiles[0]); else files.forEach((file) => form.append("files", file));
+  form.append("category_id", $("batchCategory").value); form.append("payer_member_id", $("batchPayer").value);
+  form.append("funding_source_id", $("batchSource").value); form.append("burden_type", $("batchBurden").value); form.append("note", $("batchNote").value);
+  form.append("split_member_ids", JSON.stringify(state.members.filter((item) => item.active).map((item) => item.id)));
+  loading(true, "正在上传发票文件", 1, `已选择 ${files.length} 个文件`, false);
+  let completed = false;
+  try {
+    const endpoint = zipFiles.length ? "/api/import/zip" : "/api/import/files";
+    const result = await apiUpload(endpoint, form, (progress) => setLoadingProgress(Math.max(1, Math.round(progress * .34)), "正在上传发票文件", `上传进度 ${progress}%`));
+    setLoadingProgress(40, zipFiles.length ? "压缩包已解压，正在建立识别队列" : "文件已保存，正在建立识别队列", `已创建 ${result.count || 0} 张发票草稿`);
+    $("batchResult").textContent = `已导入 ${result.count} 个文件；${(result.skipped || []).length} 个文件被跳过。正在离线识别金额与分类……`;
+    await loadInvoices();
+    await pollBatchJobs(result.jobs || [], { imported: Number(result.count || 0), skipped: (result.skipped || []).length });
+    completed = true;
+  } catch (error) { $("batchResult").textContent = error.message; toast(error.message, "error", 5000); }
+  finally { if (!completed) loading(false); }
+}
+
+async function pollBatchJobs(jobs, summary = {}) {
+  const jobIds = jobs.map((item) => typeof item === "string" ? item : item.job_id).filter(Boolean);
+  if (!jobIds.length) {
+    setLoadingProgress(100, "批量导入完成", "没有需要识别的文件");
+    $("batchResult").textContent = `批量导入完成：${summary.imported || 0} 张发票，合计 ${money(0)}。`;
+    toast($("batchResult").textContent, "success", 6500); loading(false); return;
   }
-  $("batchResult").textContent = `OCR 队列完成，共处理 ${jobIds.length} 个文件。请检查低置信度记录。`;
+  const finished = new Map();
+  for (let round = 0; round < 900 && finished.size < jobIds.length; round++) {
+    await new Promise((resolve) => setTimeout(resolve, round < 8 ? 700 : 1500));
+    const pending = jobIds.filter((id) => !finished.has(id));
+    const results = await Promise.all(pending.map((id) => api(`/api/ocr/jobs/${encodeURIComponent(id)}`).catch((error) => ({ status: "failed", error: error.message }))));
+    results.forEach((job, index) => { if (["done", "failed"].includes(job.status)) finished.set(pending[index], job); });
+    const doneCount = [...finished.values()].filter((job) => job.status === "done").length;
+    const progress = 40 + Math.round(finished.size / jobIds.length * 59);
+    setLoadingProgress(progress, "正在离线识别发票", `已完成 ${finished.size}/${jobIds.length} · 成功 ${doneCount} 张`);
+    $("batchResult").textContent = `OCR 处理中：已完成 ${finished.size}/${jobIds.length}`;
+  }
+  const completedJobs = [...finished.values()].filter((job) => job.status === "done");
+  const failedCount = jobIds.length - completedJobs.length;
+  const total = completedJobs.reduce((sum, job) => sum + Number(job.result?.total_amount || 0), 0);
+  setLoadingProgress(100, "批量导入完成", `成功 ${completedJobs.length} 张 · 合计 ${money(total)}`);
+  const resultText = `批量导入完成：导入 ${summary.imported || jobIds.length} 张，识别成功 ${completedJobs.length} 张${failedCount ? `，失败 ${failedCount} 张` : ""}${summary.skipped ? `，跳过 ${summary.skipped} 个文件` : ""}，合计 ${money(total)}。`;
+  $("batchResult").textContent = `${resultText} 请检查低置信度记录。`;
+  toast(resultText, failedCount ? "error" : "success", 8000);
   if (state.currentView === "invoices") await loadInvoices();
+  loading(false);
 }
 
 async function loadSettlements() {
@@ -759,7 +976,6 @@ function renderSettlements() {
   $("memberBalanceGrid").innerHTML = data.members.map((item) => `<article class="balance-card" style="--member-color:${escapeHtml(item.avatar_color)}"><header><span class="member-avatar">${escapeHtml(item.name.slice(0, 1))}</span><div><h4>${escapeHtml(item.name)}</h4><small>${escapeHtml(item.department || "未分组")}</small></div></header><div class="balance-amounts"><div><span>实际垫付</span><b>${money(item.paid_out)}</b></div><div><span>应承担</span><b>${money(item.owed)}</b></div></div><div class="net-balance"><span>净额</span><strong class="${item.balance < 0 ? "negative" : ""}">${item.balance >= 0 ? "+" : ""}${money(item.balance)}</strong></div></article>`).join("") || `<div class="empty-state">暂无成员结算数据</div>`;
   $("transferRecommendations").innerHTML = data.recommendations.map((item) => `<div class="transfer-item"><div><b>${escapeHtml(item.from_name)}</b><small>付款</small></div><i>→</i><div class="to"><b>${escapeHtml(item.to_name)}</b><small>收款</small></div><button class="btn secondary write-only" data-transfer-from="${escapeHtml(item.from_member_id)}" data-transfer-to="${escapeHtml(item.to_member_id)}" data-transfer-amount="${item.amount}">${money(item.amount)}</button></div>`).join("") || `<div class="empty-state">当前账目已结清</div>`;
   $("settlementHistory").innerHTML = data.history.map((item) => `<div class="compact-item"><div><b>${escapeHtml(item.from_name)} → ${escapeHtml(item.to_name)}</b><small>${escapeHtml(dateText(item.settled_at))} · ${escapeHtml(item.note || "无备注")}</small></div><strong>${money(item.amount)}</strong>${canWrite() ? `<button class="row-action delete" data-settlement-delete="${escapeHtml(item.id)}">×</button>` : ""}</div>`).join("") || `<div class="empty-state">暂无还款记录</div>`;
-  applyAccess();
 }
 
 function openSettlement(from = "", to = "", amount = "") {
@@ -894,13 +1110,22 @@ function renderLoginSlideEditor() {
   </article>`).join("") || `<div class="empty-state">尚未添加登录轮播媒体</div>`;
 }
 
+function renderLoadingCarEditor() {
+  const cars = state.appearanceLoadingCars.length ? state.appearanceLoadingCars : DEFAULT_LOADING_CARS;
+  $("loadingCarEditor").innerHTML = cars.map((car, index) => {
+    const custom = Boolean(car.attachment_id);
+    return `<article class="loading-car-card"><img src="${escapeHtml(appearanceMediaUrl(car))}" alt="${escapeHtml(car.title || "等待动画赛车")}"><span>${escapeHtml(car.title || `赛车 ${index + 1}`)}${custom ? "" : " · 内置"}</span>${custom ? `<button type="button" data-loading-car-remove="${index}" title="移除">×</button>` : ""}</article>`;
+  }).join("");
+}
+
 function openAppearance() {
-  $("appearanceForm").reset(); $("teamNameSetting").value = state.settings.team_name || "燕翔车队 Racing Team";
+  $("appearanceForm").reset(); applyDisplayMode(savedDisplayMode(), false); $("teamNameSetting").value = state.settings.team_name || "燕翔车队 Racing Team";
   $("backgroundOverlay").value = Math.round(Number(state.settings.background_overlay || .82) * 100); $("overlayValue").textContent = `${$("backgroundOverlay").value}%`;
   $("accentColor").value = state.settings.accent_color || "#27d3ff";
   $("loginSlideshowEnabled").checked = Boolean(state.settings.login_slideshow_enabled);
   $("loginTransition").value = state.settings.login_transition || "fade";
   state.appearanceSlides = (state.settings.login_slides || []).map((slide) => ({ ...slide }));
+  state.appearanceLoadingCars = (state.settings.loading_cars || DEFAULT_LOADING_CARS).map((car) => ({ ...car }));
   state.appearanceBackground = state.settings.background_media_id ? {
     attachment_id: state.settings.background_media_id,
     kind: state.settings.background_media_kind || "image",
@@ -908,7 +1133,7 @@ function openAppearance() {
     url: state.settings.background_media_url,
     private_url: state.settings.background_media_url,
   } : null;
-  renderBackgroundPreview(); renderLoginSlideEditor(); $("appearanceDialog").showModal();
+  renderBackgroundPreview(); renderLoginSlideEditor(); renderLoadingCarEditor(); $("appearanceDialog").showModal();
   if (!state.wallpapers.length) scanWallpapers(false);
 }
 
@@ -934,6 +1159,25 @@ async function addLoginMediaFiles(files) {
     state.appearanceSlides.push(...media); renderLoginSlideEditor(); toast(`已添加 ${media.length} 个轮播媒体`);
   } catch (error) { toast(error.message, "error", 5000); }
   finally { loading(false); $("loginMediaFiles").value = ""; }
+}
+
+async function addLoadingCarFiles(files) {
+  const list = [...(files || [])].slice(0, 12); if (!list.length) return;
+  const remaining = Math.max(0, 12 - state.appearanceLoadingCars.filter((item) => item.attachment_id).length);
+  if (!remaining) { $("loadingCarFiles").value = ""; return toast("等待动画最多保存 12 辆赛车", "error"); }
+  loading(true, `正在导入 ${Math.min(list.length, remaining)} 张赛车图片`);
+  try {
+    const media = await Promise.all(list.slice(0, remaining).map((file) => uploadAppearanceMedia(file)));
+    if (state.appearanceLoadingCars.every((item) => !item.attachment_id)) state.appearanceLoadingCars = [];
+    state.appearanceLoadingCars.push(...media.map((item) => ({ ...item, title: item.title || "自定义赛车" })));
+    renderLoadingCarEditor(); toast(`已添加 ${media.length} 辆赛车，保存设置后生效`);
+  } catch (error) { toast(error.message, "error", 5000); }
+  finally { loading(false); $("loadingCarFiles").value = ""; }
+}
+
+function resetLoadingCars() {
+  state.appearanceLoadingCars = DEFAULT_LOADING_CARS.map((item) => ({ ...item })); renderLoadingCarEditor();
+  toast("已恢复两辆内置赛车，保存设置后生效");
 }
 
 async function scanWallpapers(force = true) {
@@ -967,6 +1211,7 @@ async function saveAppearance(event) {
       login_slideshow_enabled: $("loginSlideshowEnabled").checked,
       login_transition: $("loginTransition").value,
       login_slides: state.appearanceSlides.map((slide) => ({ id: slide.id, attachment_id: slide.attachment_id, title: slide.title, duration: Number(slide.duration || 8) })),
+      loading_cars: state.appearanceLoadingCars.filter((car) => car.attachment_id).map((car) => ({ id: car.id, attachment_id: car.attachment_id, title: car.title })),
     } });
     state.settings = result.settings; state.publicSettings = result.settings; applyTheme(); applyPublicAppearance(result.settings); $("appearanceDialog").close(); toast("系统界面与登录轮播已更新");
   } catch (error) { toast(error.message, "error"); }
@@ -1067,6 +1312,93 @@ async function deleteDemo() {
   catch (error) { toast(error.message, "error"); }
 }
 
+function autoUpdateEnabled() {
+  try { return localStorage.getItem(AUTO_UPDATE_STORAGE_KEY) !== "0"; } catch (_) { return true; }
+}
+
+async function loadChangelog() {
+  try {
+    const response = await fetch(`/static/changelog.json?v=${encodeURIComponent(state.version)}`, { cache: "no-store" });
+    if (!response.ok) throw new Error("更新日志读取失败");
+    const payload = await response.json();
+    $("changelogList").innerHTML = (payload.entries || []).map((entry) => `<article class="changelog-entry"><header><h4>V${escapeHtml(entry.version)}</h4><time>${escapeHtml(entry.date || "")}</time></header><b>${escapeHtml(entry.title || "版本更新")}</b><ul>${(entry.changes || []).map((change) => `<li>${escapeHtml(change)}</li>`).join("")}</ul></article>`).join("") || `<div class="empty-state">暂无更新日志</div>`;
+  } catch (error) { $("changelogList").innerHTML = `<div class="empty-state">${escapeHtml(error.message)}</div>`; }
+}
+
+function renderUpdateResult(result) {
+  state.updateRelease = result;
+  const status = $("updateStatus"), releaseLink = $("updateReleaseLink"), installButton = $("installUpdateBtn");
+  status.className = "update-status"; releaseLink.classList.add("hidden"); installButton.classList.add("hidden");
+  $("updateCurrentVersion").textContent = `V${result.current_version || state.version}`;
+  if (result.release_url) { releaseLink.href = result.release_url; releaseLink.classList.remove("hidden"); }
+  if (result.available) {
+    status.classList.add("available");
+    status.textContent = `发现最新版 V${result.latest_version}。更新只替换程序文件，数据库、附件、账号、壁纸和 OCR 模型均保留。`;
+    if (isAdmin() && result.install_supported) {
+      installButton.textContent = `一键更新到 V${result.latest_version}`; installButton.classList.remove("hidden");
+    } else if (!result.install_supported) {
+      status.textContent += " 当前为网页版/开发预览，请在 Windows 软件中执行一键更新，或使用补丁包覆盖。";
+    }
+  } else {
+    status.classList.add("good"); status.textContent = result.message || `当前 V${state.version} 已是最新版本。`;
+  }
+}
+
+async function checkForUpdates(interactive = true) {
+  const status = $("updateStatus");
+  if (interactive) { status.className = "update-status"; status.textContent = "正在连接 GitHub 检查最新版本……"; }
+  try {
+    const result = await api("/api/update/check"); renderUpdateResult(result);
+    if (interactive) toast(result.available ? `发现新版本 V${result.latest_version}` : "当前已是最新版本", "success", 4500);
+    return result;
+  } catch (error) {
+    status.className = "update-status error"; status.textContent = `${error.message}。当前软件和本地数据不受影响，可稍后重试。`;
+    if (interactive) toast(error.message, "error", 5500);
+    return null;
+  }
+}
+
+async function openUpdateDialog() {
+  $("autoUpdateCheck").checked = autoUpdateEnabled();
+  $("updateCurrentVersion").textContent = `V${state.version}`;
+  $("updateStatus").className = "update-status"; $("updateStatus").textContent = "正在读取本地更新日志……";
+  $("updateDialog").showModal(); await loadChangelog(); await checkForUpdates(false);
+}
+
+async function installLatestUpdate() {
+  if (!isAdmin()) return toast("只有管理员可以安装软件更新", "error");
+  if (!state.updateRelease?.available) { const result = await checkForUpdates(true); if (!result?.available) return; }
+  loading(true, "正在下载最新版", 1, "数据目录不会被替换", false);
+  try {
+    const started = await api("/api/admin/update/download", { method: "POST" }); state.updateJobId = started.id;
+    let job = started;
+    for (let round = 0; round < 3600; round++) {
+      await new Promise((resolve) => setTimeout(resolve, round < 8 ? 600 : 1200));
+      job = await api(`/api/admin/update/jobs/${encodeURIComponent(started.id)}`);
+      setLoadingProgress(Number(job.progress || 1), job.message || "正在下载最新版", `目标版本 V${job.latest_version || state.updateRelease.latest_version} · 数据目录保持原样`);
+      if (job.status === "failed") throw new Error(job.error || "更新包下载失败");
+      if (job.status === "ready") break;
+    }
+    if (job.status !== "ready") throw new Error("更新下载等待超时，请重新检查更新");
+    loading(false); await new Promise((resolve) => setTimeout(resolve, 380));
+    const accepted = await confirmAction(`V${job.latest_version || state.updateRelease.latest_version} 已下载并通过完整性校验。安装时软件会自动重启，现有数据库、附件、账号、壁纸及模型不会被清除。`, { title: "安装最新版", confirmText: "立即安装并重启", tone: "info", eyebrow: "无损软件更新" });
+    if (!accepted) { toast("更新包已下载，可稍后再次安装"); return; }
+    const result = await api(`/api/admin/update/jobs/${encodeURIComponent(started.id)}/install`, { method: "POST" });
+    toast(result.message || "安装程序已启动", "success", 6000);
+  } catch (error) { loading(false); toast(error.message, "error", 7000); $("updateStatus").className = "update-status error"; $("updateStatus").textContent = error.message; }
+}
+
+function scheduleAutomaticUpdateCheck() {
+  if (!autoUpdateEnabled()) return;
+  let last = 0; try { last = Number(localStorage.getItem(LAST_UPDATE_CHECK_KEY) || 0); } catch (_) { last = 0; }
+  if (Date.now() - last < 24 * 60 * 60 * 1000) return;
+  try { localStorage.setItem(LAST_UPDATE_CHECK_KEY, String(Date.now())); } catch (_) { /* 仍允许本次检查 */ }
+  setTimeout(async () => {
+    const result = await checkForUpdates(false);
+    if (result?.available && isAdmin()) toast(`发现最新版 V${result.latest_version}，请到“系统设置 → 版本与更新”一键安装`, "success", 8000);
+  }, 1800);
+}
+
 function setupEvents() {
   $$('[data-theme-select]').forEach((select) => select.addEventListener("change", () => {
     const mode = applyDisplayMode(select.value);
@@ -1107,6 +1439,11 @@ function setupEvents() {
   $("quickAddBtn").addEventListener("click", openNewInvoice); $("invoiceAddBtn").addEventListener("click", openNewInvoice);
   $("invoiceFilterBtn").addEventListener("click", loadInvoices); $("invoiceSearch").addEventListener("keydown", (event) => { if (event.key === "Enter") loadInvoices(); });
   $("invoiceTable").addEventListener("click", (event) => { const button = event.target.closest("[data-invoice-action]"); if (!button) return; if (button.dataset.invoiceAction === "delete") deleteInvoiceRecord(button.dataset.id); else openInvoice(button.dataset.id, button.dataset.invoiceAction === "view").catch((error) => toast(error.message, "error")); });
+  $("invoiceTable").addEventListener("change", (event) => { const input = event.target.closest(".invoice-select"); if (!input) return; if (input.checked) state.selectedInvoiceIds.add(input.dataset.id); else state.selectedInvoiceIds.delete(input.dataset.id); renderInvoiceSelection(); });
+  $("selectAllInvoices").addEventListener("change", (event) => { state.invoices.forEach((item) => event.target.checked ? state.selectedInvoiceIds.add(item.id) : state.selectedInvoiceIds.delete(item.id)); $$("#invoiceTable .invoice-select").forEach((input) => { input.checked = event.target.checked; }); renderInvoiceSelection(); });
+  $("exportCsvBtn").addEventListener("click", () => downloadCsv()); $("batchExportSelectedBtn").addEventListener("click", () => downloadCsv([...state.selectedInvoiceIds]));
+  $("batchClearSelectionBtn").addEventListener("click", () => clearInvoiceSelection()); $("batchEditSelectedBtn").addEventListener("click", openBatchActionDialog); $("batchDeleteSelectedBtn").addEventListener("click", deleteSelectedInvoices);
+  $("batchActionForm").addEventListener("submit", submitBatchAction); $("batchActionType").addEventListener("change", updateBatchActionVisibility); $("batchActionStatus").addEventListener("change", updateBatchActionVisibility); $("batchActionRatio").addEventListener("input", updateBatchActionVisibility);
   $("invoiceForm").addEventListener("submit", saveInvoiceForm); $("invoiceFile").addEventListener("change", (event) => uploadInvoiceFile(event.target.files[0])); $("runOcrBtn").addEventListener("click", runOcr);
   $("invoiceAmount").addEventListener("input", updateReimbursementStatus); $("reimbursedAmount").addEventListener("input", updateReimbursementStatus);
   $("invoicePayer").addEventListener("change", () => renderSplitMembers(selectedSplitIds(), selectedWeights()));
@@ -1129,6 +1466,8 @@ function setupEvents() {
   $("sourceManagerList").addEventListener("click", (event) => { const button = event.target.closest("[data-source-edit]"); if (button) editSource(state.fundingSources.find((item) => item.id === button.dataset.sourceEdit)); });
   $("openAppearanceBtn").addEventListener("click", openAppearance); $("appearanceForm").addEventListener("submit", saveAppearance); $("backgroundOverlay").addEventListener("input", () => $("overlayValue").textContent = `${$("backgroundOverlay").value}%`);
   $("backgroundFile").addEventListener("change", (event) => chooseBackgroundFile(event.target.files[0])); $("loginMediaFiles").addEventListener("change", (event) => addLoginMediaFiles(event.target.files));
+  $("loadingCarFiles").addEventListener("change", (event) => addLoadingCarFiles(event.target.files)); $("resetLoadingCarsBtn").addEventListener("click", resetLoadingCars);
+  $("loadingCarEditor").addEventListener("click", (event) => { const remove = event.target.closest("[data-loading-car-remove]"); if (!remove) return; state.appearanceLoadingCars.splice(Number(remove.dataset.loadingCarRemove), 1); if (!state.appearanceLoadingCars.length) state.appearanceLoadingCars = DEFAULT_LOADING_CARS.map((item) => ({ ...item })); renderLoadingCarEditor(); });
   $("clearBackgroundBtn").addEventListener("click", () => { state.appearanceBackground = null; renderBackgroundPreview(); }); $("scanWallpapersBtn").addEventListener("click", () => scanWallpapers(true));
   $("wallpaperGrid").addEventListener("click", (event) => { const background = event.target.closest("[data-wallpaper-background]"), login = event.target.closest("[data-wallpaper-login]"); if (background) importWallpaper(background.dataset.wallpaperBackground, "background"); if (login) importWallpaper(login.dataset.wallpaperLogin, "login"); });
   $("loginSlideEditor").addEventListener("input", (event) => { const titleIndex = event.target.dataset.slideTitle, durationIndex = event.target.dataset.slideDuration; if (titleIndex !== undefined && state.appearanceSlides[Number(titleIndex)]) state.appearanceSlides[Number(titleIndex)].title = event.target.value; if (durationIndex !== undefined && state.appearanceSlides[Number(durationIndex)]) state.appearanceSlides[Number(durationIndex)].duration = Math.max(2, Math.min(600, Number(event.target.value || 8))); });
@@ -1137,6 +1476,8 @@ function setupEvents() {
   $("classificationRuleList").addEventListener("click", (event) => { const edit = event.target.closest("[data-rule-edit]"), remove = event.target.closest("[data-rule-delete]"); if (edit) editClassificationRule(edit.dataset.ruleEdit); if (remove) deleteClassificationRule(remove.dataset.ruleDelete); });
   $("openSyncBtn").addEventListener("click", openSync); $("syncForm").addEventListener("submit", saveSync); $("syncNowBtn").addEventListener("click", syncNow);
   $("restoreBackupInput").addEventListener("change", (event) => restoreBackup(event.target.files[0])); $("deleteDemoBtn").addEventListener("click", deleteDemo);
+  $("openUpdateBtn").addEventListener("click", openUpdateDialog); $("checkUpdateBtn").addEventListener("click", () => checkForUpdates(true)); $("installUpdateBtn").addEventListener("click", installLatestUpdate);
+  $("autoUpdateCheck").addEventListener("change", (event) => { try { localStorage.setItem(AUTO_UPDATE_STORAGE_KEY, event.target.checked ? "1" : "0"); } catch (_) { /* 当前会话仍可使用 */ } toast(event.target.checked ? "已启用每日自动检查更新" : "已关闭启动后自动检查"); });
   $$('[data-close]').forEach((button) => button.addEventListener("click", () => $(button.dataset.close).close()));
   $$("dialog").forEach((dialog) => dialog.addEventListener("click", (event) => {
     if (event.target !== dialog) return;

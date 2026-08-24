@@ -25,7 +25,14 @@ APP_MODE = os.environ.get("YXRT_MODE", "desktop").strip().lower()
 COOKIE_SECURE = os.environ.get("YXRT_COOKIE_SECURE", "0") == "1"
 SESSION_HOURS = int(os.environ.get("YXRT_SESSION_HOURS", "12"))
 SYNC_INTERVAL_SECONDS = max(15, int(os.environ.get("YXRT_SYNC_INTERVAL", "60")))
-OCR_WORKERS = max(1, min(4, int(os.environ.get("YXRT_OCR_WORKERS", "2"))))
+CPU_COUNT = max(1, os.cpu_count() or 4)
+DEFAULT_OCR_WORKERS = 1 if CPU_COUNT <= 4 else (2 if CPU_COUNT <= 12 else 3)
+CONFIGURED_OCR_WORKERS = int(os.environ.get("YXRT_OCR_WORKERS", "0"))
+OCR_WORKERS = DEFAULT_OCR_WORKERS if CONFIGURED_OCR_WORKERS <= 0 else max(1, min(4, CONFIGURED_OCR_WORKERS))
+DEFAULT_OCR_CPU_THREADS = max(2, CPU_COUNT // OCR_WORKERS)
+CONFIGURED_OCR_CPU_THREADS = int(os.environ.get("YXRT_OCR_CPU_THREADS", "0"))
+OCR_CPU_THREADS = max(2, min(10, DEFAULT_OCR_CPU_THREADS if CONFIGURED_OCR_CPU_THREADS <= 0 else CONFIGURED_OCR_CPU_THREADS))
+OCR_DETECTION_MAX_SIDE = max(960, min(4000, int(os.environ.get("YXRT_OCR_MAX_SIDE", "2200"))))
 DEVICE_LABEL = os.environ.get("YXRT_DEVICE_LABEL", "Windows 本地端" if APP_MODE == "desktop" else "云端服务器")
 
 SUPPORTED_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp"}

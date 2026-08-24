@@ -12,7 +12,7 @@ from typing import Any
 from .attachments import attachment_path
 from .business import PRODUCT_TYPES, to_cents
 from .classification import classify_invoice, detect_product_type as smart_detect_product_type
-from .config import MODEL_DIR, OCR_WORKERS
+from .config import MODEL_DIR, OCR_CPU_THREADS, OCR_DETECTION_MAX_SIDE, OCR_WORKERS
 from .database import audit, enqueue_sync_event, fetch_one, get_device_id, new_id, transaction, utc_now
 
 
@@ -159,7 +159,7 @@ def _get_ocr() -> Any:
             use_doc_unwarping=False,
             use_textline_orientation=False,
             device="cpu",
-            cpu_threads=max(2, min(8, os.cpu_count() or 4)),
+            cpu_threads=OCR_CPU_THREADS,
         )
         return OCR_INSTANCE
 
@@ -183,7 +183,11 @@ def _paddle_text(path: Path) -> tuple[str, float]:
     texts: list[str] = []
     scores: list[float] = []
     if hasattr(ocr, "predict"):
-        for result in ocr.predict(_runtime_path_argument(path)):
+        for result in ocr.predict(
+            _runtime_path_argument(path),
+            text_det_limit_side_len=OCR_DETECTION_MAX_SIDE,
+            text_det_limit_type="max",
+        ):
             data = _result_data(result)
             page_texts = data.get("rec_texts") or data.get("texts") or []
             page_scores = data.get("rec_scores") or data.get("scores") or []
@@ -241,6 +245,11 @@ def create_ocr_job(attachment_id: str, user_id: str, invoice_id: str | None = No
     return job_id
 
 
+def warmup_ocr() -> None:
+    """Load the local mobile OCR models in the background before first use."""
+    OCR_EXECUTOR.submit(_get_ocr)
+
+
 def _run_job(job_id: str) -> None:
     try:
         with transaction() as conn:
@@ -249,9 +258,22 @@ def _run_job(job_id: str) -> None:
                 return
             conn.execute("UPDATE ocr_jobs SET status='processing',updated_at=? WHERE id=?", (utc_now(), job_id))
             attachment = conn.execute("SELECT * FROM attachments WHERE id=?", (job["attachment_id"],)).fetchone()
+            cached = conn.execute(
+                """SELECT result_json FROM ocr_jobs
+                WHERE attachment_id=? AND id<>? AND status='done' AND result_json<>'{}'
+                ORDER BY updated_at DESC LIMIT 1""",
+                (job["attachment_id"], job_id),
+            ).fetchone()
         if not attachment:
             raise FileNotFoundError("附件记录不存在")
-        result = recognize_attachment(dict(attachment))
+        if cached:
+            try:
+                result = json.loads(cached["result_json"] or "{}")
+            except json.JSONDecodeError:
+                result = recognize_attachment(dict(attachment))
+            result["ocr_engine"] = f"{result.get('ocr_engine') or 'paddleocr'}_cache"
+        else:
+            result = recognize_attachment(dict(attachment))
         with transaction() as conn:
             result.update(classify_invoice(
                 conn,

@@ -1,0 +1,76 @@
+﻿param(
+  [string]$Version = "2.2.0",
+  [switch]$SkipBuild
+)
+
+$ErrorActionPreference = "Stop"
+$root = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
+$target = Join-Path $root "dist\燕翔车队经费管理系统"
+$releaseDir = Join-Path $root "release"
+$python = Join-Path $root ".venv\Scripts\python.exe"
+
+Set-Location -LiteralPath $root
+if (-not $SkipBuild) {
+  if (-not (Test-Path -LiteralPath $python -PathType Leaf)) {
+    throw "缺少本地开发环境，请先运行 INSTALL_WINDOWS.cmd"
+  }
+  & $python -m PyInstaller --noconfirm --clean YanxiangExpenseV2.spec
+  if ($LASTEXITCODE -ne 0) { throw "Windows 软件构建失败" }
+}
+if (-not (Test-Path -LiteralPath (Join-Path $target "燕翔车队经费管理系统.exe") -PathType Leaf)) {
+  throw "未找到构建后的主程序：$target"
+}
+
+if (Test-Path -LiteralPath (Join-Path $root "models")) {
+  Copy-Item -LiteralPath (Join-Path $root "models") -Destination (Join-Path $target "models") -Recurse -Force
+}
+Copy-Item -LiteralPath (Join-Path $root "README.md") -Destination $target -Force
+Copy-Item -LiteralPath (Join-Path $root "README_FIRST.txt") -Destination $target -Force
+Copy-Item -LiteralPath (Join-Path $root "CHANGELOG.md") -Destination $target -Force
+
+$guideDir = Join-Path $target "使用教程"
+New-Item -ItemType Directory -Path $guideDir -Force | Out-Null
+Copy-Item -LiteralPath (Join-Path $root "docs\运行与使用说明.md") -Destination $guideDir -Force
+Copy-Item -LiteralPath (Join-Path $root "docs\补丁安装说明.txt") -Destination $guideDir -Force
+if (Test-Path -LiteralPath $python) {
+  & $python scripts\create_tutorial_pdf.py
+  if ($LASTEXITCODE -ne 0) { throw "PDF 使用教程生成失败" }
+  Copy-Item -LiteralPath (Join-Path $root "output\pdf\燕翔车队经费管理系统_V2.2_使用教程.pdf") -Destination $guideDir -Force
+}
+
+New-Item -ItemType Directory -Path $releaseDir -Force | Out-Null
+$fullZip = Join-Path $releaseDir "燕翔车队经费管理系统_V$Version`_Windows完整版.zip"
+$updateZip = Join-Path $releaseDir "燕翔车队经费管理系统_V$Version`_WindowsUpdate无损升级补丁.zip"
+$tempRoot = [IO.Path]::GetFullPath([IO.Path]::GetTempPath())
+$patchStage = Join-Path $tempRoot "yxrt-update-stage-$PID-$Version"
+
+foreach ($path in @($fullZip, "$fullZip.sha256", $updateZip, "$updateZip.sha256")) {
+  if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Force }
+}
+if (Test-Path -LiteralPath $patchStage) {
+  $resolvedStage = [IO.Path]::GetFullPath($patchStage)
+  if (-not $resolvedStage.StartsWith($tempRoot, [StringComparison]::OrdinalIgnoreCase) -or -not ([IO.Path]::GetFileName($resolvedStage)).StartsWith("yxrt-update-stage-")) {
+    throw "补丁临时目录不安全"
+  }
+  Remove-Item -LiteralPath $resolvedStage -Recurse -Force
+}
+
+Compress-Archive -Path (Join-Path $target "*") -DestinationPath $fullZip -CompressionLevel Optimal
+New-Item -ItemType Directory -Path $patchStage -Force | Out-Null
+$preserve = @("data", "uploads", "models", "tmp", ".env")
+foreach ($item in Get-ChildItem -LiteralPath $target) {
+  if ($preserve -contains $item.Name -or $item.Name.StartsWith(".update-backup-")) { continue }
+  Copy-Item -LiteralPath $item.FullName -Destination (Join-Path $patchStage $item.Name) -Recurse -Force
+}
+Copy-Item -LiteralPath (Join-Path $root "docs\补丁安装说明.txt") -Destination $patchStage -Force
+Compress-Archive -Path (Join-Path $patchStage "*") -DestinationPath $updateZip -CompressionLevel Optimal
+Remove-Item -LiteralPath $patchStage -Recurse -Force
+
+foreach ($package in @($fullZip, $updateZip)) {
+  $hash = (Get-FileHash -LiteralPath $package -Algorithm SHA256).Hash.ToLowerInvariant()
+  "$hash  $([IO.Path]::GetFileName($package))" | Out-File -LiteralPath "$package.sha256" -Encoding ascii
+}
+
+Write-Host "已生成："
+Write-Host $fullZip
+Write-Host $updateZip

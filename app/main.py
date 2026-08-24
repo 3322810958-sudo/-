@@ -37,6 +37,7 @@ from .auth import (
 from .business import (
     BusinessError,
     PRODUCT_TYPES,
+    batch_update_invoices,
     dashboard,
     delete_demo_data,
     delete_invoice,
@@ -55,6 +56,7 @@ from .config import (
     APP_DIR,
     APP_MODE,
     DB_PATH,
+    SUPPORTED_EXTENSIONS,
     SYNC_INTERVAL_SECONDS,
     TMP_DIR,
     UPLOAD_DIR,
@@ -77,9 +79,10 @@ from .database import (
     transaction,
     utc_now,
 )
-from .ocr_engine import create_ocr_job, get_ocr_job, parse_invoice_text
+from .ocr_engine import create_ocr_job, get_ocr_job, parse_invoice_text, warmup_ocr
 from .security import hash_password, token_hash, validate_new_password, validate_username
 from .sync_engine import SyncError, apply_events, events_after, perform_sync, sync_config, valid_sync_key
+from .updater import check_for_update, get_update_job, schedule_update_install, start_update_download
 from .wallpaper_engine import scan_wallpapers, wallpaper_item
 
 
@@ -88,7 +91,7 @@ STOP_EVENT = threading.Event()
 APPEARANCE_SETTING_KEYS = (
     "team_name", "background_image", "background_media_id", "background_media_kind",
     "background_overlay", "accent_color", "login_slideshow_enabled", "login_slides",
-    "login_transition",
+    "login_transition", "loading_cars",
 )
 
 
@@ -129,6 +132,8 @@ def _sync_loop() -> None:
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     init_db()
+    if os.environ.get("YXRT_OCR_WARMUP", "1") == "1" and "PYTEST_CURRENT_TEST" not in os.environ:
+        warmup_ocr()
     STOP_EVENT.clear()
     worker = threading.Thread(target=_sync_loop, name="yxrt-sync", daemon=True)
     worker.start()
@@ -177,6 +182,47 @@ async def health() -> dict[str, Any]:
     return {"ok": True, "version": __version__, "mode": APP_MODE, "time": utc_now()}
 
 
+@app.get("/api/update/check")
+async def update_check(request: Request) -> dict[str, Any]:
+    get_auth(request)
+    try:
+        return await asyncio.to_thread(check_for_update)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@app.post("/api/admin/update/download")
+async def update_download(request: Request) -> dict[str, Any]:
+    auth = get_auth(request)
+    require_csrf(request, auth)
+    require_admin(auth)
+    try:
+        return await asyncio.to_thread(start_update_download, auth.user["id"])
+    except RuntimeError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/api/admin/update/jobs/{job_id}")
+async def update_job_status(job_id: str, request: Request) -> dict[str, Any]:
+    auth = get_auth(request)
+    require_admin(auth)
+    job = get_update_job(job_id)
+    if not job or job.get("created_by") != auth.user["id"]:
+        raise HTTPException(status_code=404, detail="更新任务不存在")
+    return job
+
+
+@app.post("/api/admin/update/jobs/{job_id}/install")
+async def update_install(job_id: str, request: Request) -> dict[str, Any]:
+    auth = get_auth(request)
+    require_csrf(request, auth)
+    require_admin(auth)
+    try:
+        return schedule_update_install(job_id, auth.user["id"])
+    except RuntimeError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 def _media_kind(name: str, mime_type: str = "") -> str:
     extension = Path(name).suffix.lower()
     if extension in APPEARANCE_VIDEO_EXTENSIONS or str(mime_type).startswith("video/"):
@@ -197,6 +243,7 @@ def _appearance_settings(conn: sqlite3.Connection) -> dict[str, Any]:
     values.setdefault("accent_color", "#27d3ff")
     values.setdefault("login_slideshow_enabled", "1")
     values.setdefault("login_transition", "fade")
+    values.setdefault("loading_cars", "[]")
 
     background_id = str(values.get("background_media_id") or "")
     values["background_media_url"] = f"/api/public/media/{background_id}" if background_id else ""
@@ -232,6 +279,36 @@ def _appearance_settings(conn: sqlite3.Connection) -> dict[str, Any]:
             })
     values["login_slides"] = slides
     values["login_slideshow_enabled"] = str(values["login_slideshow_enabled"]) == "1"
+    raw_cars = values.get("loading_cars") or "[]"
+    try:
+        parsed_cars = json.loads(raw_cars) if isinstance(raw_cars, str) else raw_cars
+    except json.JSONDecodeError:
+        parsed_cars = []
+    loading_cars: list[dict[str, Any]] = []
+    if isinstance(parsed_cars, list):
+        for index, raw in enumerate(parsed_cars[:12]):
+            if not isinstance(raw, dict):
+                continue
+            attachment_id = str(raw.get("attachment_id") or "")
+            attachment = conn.execute(
+                "SELECT id,original_name,mime_type FROM attachments WHERE id=? AND deleted_at IS NULL",
+                (attachment_id,),
+            ).fetchone()
+            if not attachment or _media_kind(attachment["original_name"], attachment["mime_type"]) != "image":
+                continue
+            loading_cars.append({
+                "id": str(raw.get("id") or f"loader_{index}_{attachment_id}")[:100],
+                "attachment_id": attachment_id,
+                "title": str(raw.get("title") or attachment["original_name"])[:160],
+                "url": f"/api/public/media/{attachment_id}",
+                "private_url": f"/api/attachments/{attachment_id}/content",
+            })
+    if not loading_cars:
+        loading_cars = [
+            {"id": "default_formula_1", "attachment_id": "", "title": "方程式赛车一", "url": "/static/assets/loading-car-formula-1.png", "private_url": "/static/assets/loading-car-formula-1.png"},
+            {"id": "default_formula_2", "attachment_id": "", "title": "方程式赛车二", "url": "/static/assets/loading-car-formula-2.png", "private_url": "/static/assets/loading-car-formula-2.png"},
+        ]
+    values["loading_cars"] = loading_cars
     return values
 
 
@@ -239,6 +316,7 @@ def _configured_public_media_ids(conn: sqlite3.Connection) -> set[str]:
     settings = _appearance_settings(conn)
     ids = {str(settings.get("background_media_id") or "")}
     ids.update(str(slide.get("attachment_id") or "") for slide in settings.get("login_slides", []))
+    ids.update(str(car.get("attachment_id") or "") for car in settings.get("loading_cars", []))
     return {value for value in ids if value}
 
 
@@ -396,6 +474,16 @@ async def invoice_delete(invoice_id: str, request: Request) -> dict[str, bool]:
     delete_invoice(invoice_id, auth.user)
     await hub.notify()
     return {"ok": True}
+
+
+@app.post("/api/invoices/batch-action")
+async def invoices_batch_action(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    auth = get_auth(request)
+    require_csrf(request, auth)
+    require_write(auth)
+    result = batch_update_invoices(payload, auth.user)
+    await hub.notify()
+    return result
 
 
 @app.get("/api/settlements/summary")
@@ -805,6 +893,53 @@ async def import_zip(
         Path(temp_name).unlink(missing_ok=True)
 
 
+@app.post("/api/import/files")
+async def import_files(
+    request: Request,
+    files: list[UploadFile] = File(...),
+    category_id: str = Form(""),
+    payer_member_id: str = Form(""),
+    burden_type: str = Form("team_aa"),
+    funding_source_id: str = Form(""),
+    split_member_ids: str = Form("[]"),
+    note: str = Form(""),
+) -> dict[str, Any]:
+    auth = get_auth(request)
+    require_csrf(request, auth)
+    require_write(auth)
+    attachments: list[dict[str, Any]] = []
+    skipped: list[dict[str, str]] = []
+    for file in files:
+        filename = Path(file.filename or "attachment").name
+        if Path(filename).suffix.lower() not in SUPPORTED_EXTENSIONS:
+            skipped.append({"file_name": filename, "reason": "不是支持的发票文件格式"})
+            continue
+        try:
+            attachments.append(await save_upload(file, auth.user))
+        except Exception as exc:
+            skipped.append({"file_name": filename, "reason": str(exc)[:300]})
+    if not attachments:
+        raise HTTPException(status_code=400, detail="没有可导入的发票文件")
+    try:
+        selected_ids = json.loads(split_member_ids)
+        if not isinstance(selected_ids, list):
+            selected_ids = []
+    except json.JSONDecodeError:
+        selected_ids = []
+    drafts = _create_import_drafts(
+        attachments, auth.user, category_id=category_id, payer_member_id=payer_member_id,
+        burden_type=burden_type, funding_source_id=funding_source_id,
+        split_member_ids=[str(value) for value in selected_ids], note=note,
+    )
+    jobs = [
+        {"attachment_id": attachment["id"], "invoice_id": draft["id"],
+         "job_id": create_ocr_job(attachment["id"], auth.user["id"], draft["id"])}
+        for attachment, draft in zip(attachments, drafts)
+    ]
+    await hub.notify()
+    return {"attachments": attachments, "drafts": drafts, "jobs": jobs, "skipped": skipped, "count": len(attachments)}
+
+
 @app.post("/api/ocr/parse-text")
 async def ocr_parse_text(payload: dict[str, Any], request: Request) -> dict[str, Any]:
     auth = get_auth(request)
@@ -914,7 +1049,7 @@ async def settings_update(payload: dict[str, Any], request: Request) -> dict[str
     require_admin(auth)
     allowed = {
         "team_name", "background_image", "background_media_id", "background_overlay", "accent_color",
-        "login_slideshow_enabled", "login_slides", "login_transition",
+        "login_slideshow_enabled", "login_slides", "login_transition", "loading_cars",
     }
     with transaction() as conn:
         create_snapshot(conn, auth.user["id"], "界面设置修改前", "全队显示设置")
@@ -972,6 +1107,26 @@ async def settings_update(payload: dict[str, Any], request: Request) -> dict[str
                             "duration": duration,
                         })
                     value = json.dumps(slides, ensure_ascii=False, separators=(",", ":"))
+                elif key == "loading_cars":
+                    if not isinstance(payload[key], list):
+                        raise HTTPException(status_code=400, detail="等待动画赛车列表格式不正确")
+                    cars: list[dict[str, Any]] = []
+                    for index, raw in enumerate(payload[key][:12]):
+                        if not isinstance(raw, dict):
+                            continue
+                        attachment_id = str(raw.get("attachment_id") or "")
+                        attachment = conn.execute(
+                            "SELECT original_name,mime_type FROM attachments WHERE id=? AND deleted_at IS NULL",
+                            (attachment_id,),
+                        ).fetchone()
+                        if not attachment or _media_kind(attachment["original_name"], attachment["mime_type"]) != "image":
+                            raise HTTPException(status_code=400, detail=f"第 {index + 1} 张等待动画赛车图片不存在")
+                        cars.append({
+                            "id": str(raw.get("id") or new_id("loader"))[:100],
+                            "attachment_id": attachment_id,
+                            "title": str(raw.get("title") or attachment["original_name"])[:160],
+                        })
+                    value = json.dumps(cars, ensure_ascii=False, separators=(",", ":"))
                 else:
                     value = str(payload[key] or "")
                 set_setting(conn, key, value)
@@ -1178,27 +1333,73 @@ async def report_summary(request: Request, date_from: str = "", date_to: str = "
     return {"categories": categories, "sources": sources, "payers": payers}
 
 
-@app.get("/api/export/csv")
-async def export_csv(request: Request) -> StreamingResponse:
-    get_auth(request)
-    with connect() as conn:
-        invoices = list_invoices(conn, limit=2000)
+def _csv_export_response(invoices: list[dict[str, Any]]) -> StreamingResponse:
     output = io.StringIO()
     writer = csv.writer(output)
-    writer.writerow(["日期", "发票号码", "销售方", "总金额", "税额", "分类", "产品类型", "垫付人", "承担方式", "报销状态", "已报销金额", "资金来源", "参与成员", "备注"])
+    writer.writerow(["开票日期", "上传日期", "提交人", "提交账号", "发票号码", "销售方", "总金额", "税额", "分类", "产品类型", "垫付人", "承担方式", "报销状态", "已报销金额", "报销日期", "资金来源", "参与成员", "备注"])
     burden_labels = {"team_aa": "全队AA", "self_paid": "个人承担", "specified_split": "指定成员分摊"}
     status_labels = {"pending": "未报销", "partial": "部分报销", "reimbursed": "已报销"}
     for item in invoices:
         writer.writerow([
-            item["invoice_date"], item["invoice_no"], item["vendor"], f"{item['total_amount']:.2f}", f"{item['tax_amount']:.2f}",
+            item["invoice_date"], str(item.get("uploaded_at") or item.get("created_at") or "").replace("T", " ")[:19],
+            item.get("created_by_name") or "系统任务", item.get("created_by_username") or "",
+            item["invoice_no"], item["vendor"], f"{item['total_amount']:.2f}", f"{item['tax_amount']:.2f}",
             item.get("category_name") or "", item["product_type"], item.get("payer_name") or "",
             burden_labels.get(item["burden_type"], item["burden_type"]), status_labels.get(item["reimbursement_status"], item["reimbursement_status"]),
-            f"{item['reimbursed_amount']:.2f}", item.get("funding_source_name") or "",
+            f"{item['reimbursed_amount']:.2f}", item.get("reimbursement_date") or "", item.get("funding_source_name") or "",
             "、".join(split["member_name"] for split in item["splits"]), item["note"],
         ])
     payload = "\ufeff" + output.getvalue()
+    total = round(sum(float(item.get("total_amount") or 0) for item in invoices), 2)
     return StreamingResponse(iter([payload.encode("utf-8")]), media_type="text/csv; charset=utf-8",
-                             headers={"Content-Disposition": "attachment; filename*=UTF-8''yanxiang-expenses.csv"})
+                             headers={
+                                 "Content-Disposition": f"attachment; filename*=UTF-8''yanxiang-expenses-{utc_now()[:10]}.csv",
+                                 "X-Export-Count": str(len(invoices)),
+                                 "X-Export-Total": f"{total:.2f}",
+                             })
+
+
+def _filtered_export_invoices(conn: sqlite3.Connection, filters: dict[str, Any]) -> list[dict[str, Any]]:
+    items = list_invoices(
+        conn,
+        search=str(filters.get("search") or ""),
+        status=str(filters.get("status") or ""),
+        category_id=str(filters.get("category_id") or ""),
+        source_id=str(filters.get("source_id") or ""),
+        date_from=str(filters.get("date_from") or ""),
+        date_to=str(filters.get("date_to") or ""),
+        limit=100000,
+    )
+    raw_ids = filters.get("ids") or []
+    if isinstance(raw_ids, str):
+        raw_ids = [value for value in raw_ids.split(",") if value]
+    if isinstance(raw_ids, list) and raw_ids:
+        selected = {str(value) for value in raw_ids}
+        items = [item for item in items if item["id"] in selected]
+    return items
+
+
+@app.get("/api/export/csv")
+async def export_csv(
+    request: Request, search: str = "", status: str = "", category_id: str = "",
+    source_id: str = "", date_from: str = "", date_to: str = "", ids: str = "",
+) -> StreamingResponse:
+    get_auth(request)
+    with connect() as conn:
+        invoices = _filtered_export_invoices(conn, {
+            "search": search, "status": status, "category_id": category_id,
+            "source_id": source_id, "date_from": date_from, "date_to": date_to, "ids": ids,
+        })
+    return _csv_export_response(invoices)
+
+
+@app.post("/api/export/csv")
+async def export_csv_selected(payload: dict[str, Any], request: Request) -> StreamingResponse:
+    auth = get_auth(request)
+    require_csrf(request, auth)
+    with connect() as conn:
+        invoices = _filtered_export_invoices(conn, payload)
+    return _csv_export_response(invoices)
 
 
 def _create_backup_archive(output_path: Path | None = None) -> Path:
