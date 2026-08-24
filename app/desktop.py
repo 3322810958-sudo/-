@@ -13,6 +13,8 @@ from urllib.request import urlopen
 
 import uvicorn
 
+from . import __version__
+
 
 def port_ready(host: str, port: int) -> bool:
     try:
@@ -25,7 +27,7 @@ def port_ready(host: str, port: int) -> bool:
 def app_ready(host: str, port: int) -> bool:
     try:
         with urlopen(f"http://{host}:{port}/health", timeout=0.8) as response:
-            return response.status == 200 and b'"version":"2.1.0"' in response.read()
+            return response.status == 200 and f'"version":"{__version__}"'.encode() in response.read()
     except (OSError, URLError):
         return False
 
@@ -74,7 +76,7 @@ def main() -> None:
         webview_storage = runtime_home / "data" / "webview"
         webview_storage.mkdir(parents=True, exist_ok=True)
         window = webview.create_window(
-            "燕翔车队经费管理系统 V2.1",
+            f"燕翔车队经费管理系统 V{__version__}",
             url,
             width=1460,
             height=920,

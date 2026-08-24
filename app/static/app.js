@@ -5,9 +5,28 @@ const state = {
   settings: {}, dashboard: null, invoices: [], users: [], currentView: "dashboard", socket: null,
   resizeTimer: null, publicSettings: {}, loginSlideTimer: null, loginSlideIndex: 0,
   loginActiveLayer: "A", appearanceSlides: [], appearanceBackground: null,
-  wallpapers: [], classificationRules: [],
+  wallpapers: [], classificationRules: [], decisionResolve: null,
+  shortcuts: {}, shortcutDraft: {},
 };
 
+const DISPLAY_MODE_KEY = "yanxiang-display-mode";
+const DISPLAY_MODES = new Set(["clear-dark", "light", "racing-blue"]);
+const DISPLAY_MODE_LABELS = { "clear-dark": "清晰深色", light: "护眼浅色", "racing-blue": "赛车蓝（高对比）" };
+const SHORTCUT_STORAGE_KEY = "yanxiang-shortcuts-v1";
+const SHORTCUT_DEFINITIONS = [
+  { id: "new_invoice", label: "新增发票", description: "直接打开新增发票窗口", defaultKey: "Ctrl+N" },
+  { id: "search_invoices", label: "搜索发票", description: "进入发票台账并定位搜索框", defaultKey: "Ctrl+F" },
+  { id: "save_form", label: "保存当前窗口", description: "提交当前打开的编辑窗口", defaultKey: "Ctrl+S" },
+  { id: "dashboard", label: "数据驾驶舱", description: "切换到数据驾驶舱", defaultKey: "Alt+1" },
+  { id: "invoices", label: "发票台账", description: "切换到发票台账", defaultKey: "Alt+2" },
+  { id: "settlements", label: "AA 结算", description: "切换到 AA 结算", defaultKey: "Alt+3" },
+  { id: "reports", label: "分类统计", description: "切换到分类统计", defaultKey: "Alt+4" },
+  { id: "members", label: "成员与账号", description: "切换到成员与账号", defaultKey: "Alt+5" },
+  { id: "history", label: "日志与回溯", description: "管理员切换到版本回溯", defaultKey: "Alt+6" },
+  { id: "settings", label: "系统设置", description: "切换到系统设置", defaultKey: "Alt+7" },
+  { id: "cycle_theme", label: "切换显示模式", description: "循环切换三种显示模式", defaultKey: "Alt+T" },
+];
+const DEFAULT_SHORTCUTS = Object.fromEntries(SHORTCUT_DEFINITIONS.map((item) => [item.id, item.defaultKey]));
 const $ = (id) => document.getElementById(id);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
 const money = (value) => `¥${Number(value || 0).toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
@@ -18,6 +37,168 @@ const roleLabel = (role) => ({ admin: "管理员", member: "成员", viewer: "�
 const statusLabel = (status) => ({ pending: "未报销", partial: "部分报销", reimbursed: "已报销" }[status] || status);
 const burdenLabel = (type) => ({ team_aa: "全队 AA", specified_split: "指定成员", self_paid: "个人承担" }[type] || type);
 const actionLabel = (action) => ({ create: "新增", update: "修改", delete: "删除", login: "登录", logout: "退出", restore: "版本回溯", upload: "上传附件", seed: "初始化", archive: "停用", sync_apply: "同步应用", sync_conflict: "同步冲突", create_snapshot: "建立版本", delete_demo: "清除演示数据", batch_import: "批量导入", ocr_complete: "OCR 完成", change_credentials: "修改账号" }[action] || action);
+
+function savedDisplayMode() {
+  try {
+    const saved = localStorage.getItem(DISPLAY_MODE_KEY);
+    return DISPLAY_MODES.has(saved) ? saved : "clear-dark";
+  } catch (_) { return "clear-dark"; }
+}
+
+function cssVar(name, fallback) {
+  return getComputedStyle(document.documentElement).getPropertyValue(name).trim() || fallback;
+}
+
+function applyDisplayMode(mode, persist = true) {
+  const safe = DISPLAY_MODES.has(mode) ? mode : "clear-dark";
+  document.documentElement.dataset.theme = safe;
+  $$('[data-theme-select]').forEach((select) => { select.value = safe; });
+  const themeMeta = document.querySelector('meta[name="theme-color"]');
+  if (themeMeta) themeMeta.content = { "clear-dark": "#09131e", light: "#edf3f7", "racing-blue": "#0b2942" }[safe];
+  if (persist) {
+    try { localStorage.setItem(DISPLAY_MODE_KEY, safe); } catch (_) { /* 浏览器禁用本地存储时仍可临时切换 */ }
+  }
+  if (state.dashboard && state.currentView === "dashboard") requestAnimationFrame(() => renderDashboard());
+  return safe;
+}
+
+function finishDecision(value) {
+  const resolve = state.decisionResolve;
+  state.decisionResolve = null;
+  if ($("decisionDialog").open) $("decisionDialog").close();
+  if (resolve) resolve(value);
+}
+
+function showDecision({ title = "确认操作", message = "", confirmText = "确认", cancelText = "取消", tone = "danger", eyebrow = "请确认操作", inputLabel = "", inputValue = "" } = {}) {
+  if (state.decisionResolve) finishDecision(false);
+  const dialog = $("decisionDialog"), inputWrap = $("decisionInputWrap"), input = $("decisionInput");
+  dialog.dataset.tone = tone;
+  $("decisionEyebrow").textContent = eyebrow; $("decisionTitle").textContent = title; $("decisionMessage").textContent = message;
+  $("decisionConfirmBtn").textContent = confirmText; $("decisionCancelBtn").textContent = cancelText;
+  $("decisionConfirmBtn").className = `btn ${tone === "danger" ? "danger" : "primary"}`;
+  $("decisionIcon").textContent = tone === "info" ? "i" : "!";
+  inputWrap.classList.toggle("hidden", !inputLabel); $("decisionInputLabel").textContent = inputLabel || "名称";
+  input.value = inputValue || ""; input.required = Boolean(inputLabel); input.setCustomValidity("");
+  return new Promise((resolve) => {
+    state.decisionResolve = resolve;
+    dialog.showModal();
+    requestAnimationFrame(() => (inputLabel ? input : $("decisionConfirmBtn")).focus());
+  });
+}
+
+async function confirmAction(message, options = {}) {
+  return Boolean(await showDecision({ message, ...options }));
+}
+
+async function requestText(title, inputValue = "") {
+  const result = await showDecision({ title, message: "填写名称后确认创建。", confirmText: "创建", tone: "info", eyebrow: "输入内容", inputLabel: "版本名称", inputValue });
+  return typeof result === "string" ? result.trim() : "";
+}
+
+function loadShortcutSettings() {
+  let stored = {};
+  try { stored = JSON.parse(localStorage.getItem(SHORTCUT_STORAGE_KEY) || "{}"); } catch (_) { stored = {}; }
+  return Object.fromEntries(SHORTCUT_DEFINITIONS.map((item) => [item.id, typeof stored[item.id] === "string" && stored[item.id].length <= 40 ? stored[item.id] : item.defaultKey]));
+}
+
+function shortcutFromEvent(event) {
+  const modifierCodes = new Set(["ControlLeft", "ControlRight", "AltLeft", "AltRight", "ShiftLeft", "ShiftRight", "MetaLeft", "MetaRight"]);
+  if (modifierCodes.has(event.code)) return "";
+  const codeMap = { Space: "Space", Enter: "Enter", Tab: "Tab", ArrowUp: "ArrowUp", ArrowDown: "ArrowDown", ArrowLeft: "ArrowLeft", ArrowRight: "ArrowRight", Home: "Home", End: "End", PageUp: "PageUp", PageDown: "PageDown", Insert: "Insert", Delete: "Delete", Minus: "-", Equal: "=", Comma: ",", Period: ".", Slash: "/", Semicolon: ";", Quote: "'", BracketLeft: "[", BracketRight: "]", Backslash: "\\", Backquote: "`" };
+  let key = codeMap[event.code] || "";
+  if (/^Key[A-Z]$/.test(event.code)) key = event.code.slice(3);
+  else if (/^Digit[0-9]$/.test(event.code)) key = event.code.slice(5);
+  else if (/^F([1-9]|1[0-2])$/.test(event.code)) key = event.code;
+  if (!key) return "";
+  const modifiers = [];
+  if (event.ctrlKey) modifiers.push("Ctrl");
+  if (event.altKey) modifiers.push("Alt");
+  if (event.shiftKey) modifiers.push("Shift");
+  if (event.metaKey) modifiers.push("Meta");
+  if (!modifiers.some((item) => ["Ctrl", "Alt", "Meta"].includes(item)) && !/^F([1-9]|1[0-2])$/.test(key)) return "";
+  return [...modifiers, key].join("+");
+}
+
+function shortcutDuplicates(draft) {
+  const counts = {};
+  Object.values(draft).filter(Boolean).forEach((value) => { counts[value] = (counts[value] || 0) + 1; });
+  return new Set(Object.entries(counts).filter(([, count]) => count > 1).map(([value]) => value));
+}
+
+function renderShortcutEditor() {
+  const duplicates = shortcutDuplicates(state.shortcutDraft);
+  $("shortcutList").innerHTML = SHORTCUT_DEFINITIONS.map((item) => {
+    const value = state.shortcutDraft[item.id] || "";
+    return `<div class="shortcut-row${duplicates.has(value) ? " conflict" : ""}"><div><b>${escapeHtml(item.label)}</b><small>${escapeHtml(item.description)}</small></div><input readonly data-shortcut-capture="${escapeHtml(item.id)}" value="${escapeHtml(value)}" placeholder="未设置" aria-label="${escapeHtml(item.label)}快捷键"><button type="button" class="row-action delete" data-shortcut-clear="${escapeHtml(item.id)}" title="清除快捷键">×</button></div>`;
+  }).join("");
+  $("shortcutConflict").textContent = duplicates.size ? `存在重复快捷键：${[...duplicates].join("、")}` : "";
+  $("saveShortcutsBtn").disabled = Boolean(duplicates.size);
+}
+
+function openShortcutSettings() {
+  state.shortcutDraft = { ...state.shortcuts };
+  renderShortcutEditor();
+  $("shortcutsDialog").showModal();
+}
+
+function captureShortcut(event) {
+  const input = event.target.closest("[data-shortcut-capture]"); if (!input) return;
+  event.preventDefault(); event.stopPropagation();
+  if (event.key === "Escape") { input.blur(); return; }
+  const shortcut = shortcutFromEvent(event);
+  if (!shortcut) { $("shortcutConflict").textContent = "请使用 Ctrl 或 Alt 组合键，也可以使用 F1–F12。"; return; }
+  state.shortcutDraft[input.dataset.shortcutCapture] = shortcut;
+  renderShortcutEditor();
+}
+
+async function resetShortcutSettings() {
+  const accepted = await confirmAction("当前自定义按键将被默认组合替换，保存后生效。", { title: "恢复默认快捷键", confirmText: "恢复默认", tone: "warning" });
+  if (!accepted) return;
+  state.shortcutDraft = { ...DEFAULT_SHORTCUTS }; renderShortcutEditor(); toast("已载入默认快捷键，请点击保存");
+}
+
+function saveShortcutSettings(event) {
+  event.preventDefault();
+  if (shortcutDuplicates(state.shortcutDraft).size) return renderShortcutEditor();
+  state.shortcuts = { ...state.shortcutDraft };
+  try { localStorage.setItem(SHORTCUT_STORAGE_KEY, JSON.stringify(state.shortcuts)); } catch (_) { return toast("浏览器禁止保存快捷键设置", "error"); }
+  $("shortcutsDialog").close(); toast("快捷键设置已保存");
+}
+
+async function runShortcutAction(action) {
+  const openDialog = document.querySelector("dialog[open]");
+  if (action === "save_form") {
+    const focusedForm = document.activeElement?.closest?.("form");
+    const form = focusedForm && openDialog?.contains(focusedForm) ? focusedForm : openDialog?.querySelector("form");
+    if (!form || ["decisionForm", "shortcutsForm"].includes(form.id)) return toast("当前没有可保存的编辑窗口", "error");
+    form.requestSubmit(); return;
+  }
+  if (action === "cycle_theme") {
+    const modes = [...DISPLAY_MODES], current = modes.indexOf(document.documentElement.dataset.theme);
+    const mode = applyDisplayMode(modes[(current + 1) % modes.length]); toast(`已切换为${DISPLAY_MODE_LABELS[mode]}`); return;
+  }
+  if (!state.user) return;
+  if (action === "new_invoice") {
+    if (!canWrite()) return toast("当前账号为只读权限", "error");
+    openNewInvoice(); return;
+  }
+  if (action === "search_invoices") {
+    await navigate("invoices"); $("invoiceSearch").focus(); $("invoiceSearch").select(); return;
+  }
+  if (action === "history" && !isAdmin()) return toast("版本回溯仅管理员可用", "error");
+  if (["dashboard", "invoices", "settlements", "reports", "members", "history", "settings"].includes(action)) await navigate(action);
+}
+
+function handleGlobalShortcut(event) {
+  if (event.defaultPrevented || event.repeat || event.isComposing) return;
+  const shortcut = shortcutFromEvent(event); if (!shortcut) return;
+  const action = SHORTCUT_DEFINITIONS.find((item) => state.shortcuts[item.id] === shortcut)?.id; if (!action) return;
+  const openDialog = document.querySelector("dialog[open]");
+  if (openDialog && (action !== "save_form" || ["decisionDialog", "shortcutsDialog"].includes(openDialog.id))) return;
+  if (!state.user && action !== "cycle_theme") return;
+  event.preventDefault();
+  runShortcutAction(action).catch((error) => toast(error.message, "error"));
+}
 
 function canWrite() { return Boolean(state.user?.permissions?.write); }
 function isAdmin() { return state.user?.role === "admin"; }
@@ -145,7 +326,7 @@ function applyTheme() {
     if (video.getAttribute("src") !== mediaUrl) video.src = mediaUrl;
     video.classList.add("active"); video.play().catch(() => {});
   } else { video.pause(); video.removeAttribute("src"); video.load(); video.classList.remove("active"); }
-  document.title = `${settings.team_name || "燕翔车队"} · 经费管理系统 V2.1`;
+  document.title = `${settings.team_name || "燕翔车队"} · 经费管理系统 V2.1.1`;
 }
 
 function applyAccess() {
@@ -347,15 +528,17 @@ function drawMonthly(items) {
   const canvas = $("monthlyChart"); if (!canvas || !canvas.offsetParent) return;
   const { ctx, width, height } = prepareCanvas(canvas, 210); ctx.clearRect(0, 0, width, height);
   const pad = { l: 46, r: 16, t: 14, b: 30 }, values = items.map((item) => Number(item.amount || 0)); const max = Math.max(...values, 1);
-  ctx.font = "9px Bahnschrift, sans-serif"; ctx.textAlign = "right"; ctx.fillStyle = "#53697d"; ctx.strokeStyle = "rgba(156,183,211,.09)"; ctx.lineWidth = 1;
+  const chartMuted = cssVar("--chart-muted", "#71869a"), chartGrid = cssVar("--chart-grid", "rgba(156,183,211,.16)");
+  const chartPoint = cssVar("--chart-point", "#07101a"), accent = cssVar("--accent", "#27d3ff"), accentRgb = cssVar("--accent-rgb", "39, 211, 255");
+  ctx.font = "10px Bahnschrift, sans-serif"; ctx.textAlign = "right"; ctx.fillStyle = chartMuted; ctx.strokeStyle = chartGrid; ctx.lineWidth = 1;
   for (let i = 0; i <= 4; i++) { const y = pad.t + (height - pad.t - pad.b) * i / 4; ctx.beginPath(); ctx.moveTo(pad.l, y); ctx.lineTo(width - pad.r, y); ctx.stroke(); ctx.fillText(money(max * (4 - i) / 4).replace("¥", ""), pad.l - 8, y + 3); }
-  if (!items.length) { ctx.textAlign = "center"; ctx.fillStyle = "#52687c"; ctx.fillText("暂无月度数据", width / 2, height / 2); return; }
+  if (!items.length) { ctx.textAlign = "center"; ctx.fillStyle = chartMuted; ctx.fillText("暂无月度数据", width / 2, height / 2); return; }
   const xAt = (index) => pad.l + (width - pad.l - pad.r) * (items.length === 1 ? .5 : index / (items.length - 1));
   const yAt = (value) => pad.t + (height - pad.t - pad.b) * (1 - value / max);
-  const gradient = ctx.createLinearGradient(0, pad.t, 0, height - pad.b); gradient.addColorStop(0, "rgba(39,211,255,.28)"); gradient.addColorStop(1, "rgba(39,211,255,0)");
+  const gradient = ctx.createLinearGradient(0, pad.t, 0, height - pad.b); gradient.addColorStop(0, `rgba(${accentRgb},.28)`); gradient.addColorStop(1, `rgba(${accentRgb},0)`);
   ctx.beginPath(); items.forEach((item, index) => { const x = xAt(index), y = yAt(item.amount); index ? ctx.lineTo(x, y) : ctx.moveTo(x, y); }); ctx.lineTo(xAt(items.length - 1), height - pad.b); ctx.lineTo(xAt(0), height - pad.b); ctx.closePath(); ctx.fillStyle = gradient; ctx.fill();
-  ctx.beginPath(); items.forEach((item, index) => { const x = xAt(index), y = yAt(item.amount); index ? ctx.lineTo(x, y) : ctx.moveTo(x, y); }); ctx.strokeStyle = getComputedStyle(document.documentElement).getPropertyValue("--accent").trim(); ctx.lineWidth = 2; ctx.stroke();
-  items.forEach((item, index) => { const x = xAt(index), y = yAt(item.amount); ctx.beginPath(); ctx.arc(x, y, 3, 0, Math.PI * 2); ctx.fillStyle = "#07101a"; ctx.fill(); ctx.strokeStyle = "#27d3ff"; ctx.stroke(); ctx.fillStyle = "#52687c"; ctx.textAlign = "center"; ctx.fillText(item.month.slice(5), x, height - 10); });
+  ctx.beginPath(); items.forEach((item, index) => { const x = xAt(index), y = yAt(item.amount); index ? ctx.lineTo(x, y) : ctx.moveTo(x, y); }); ctx.strokeStyle = accent; ctx.lineWidth = 2; ctx.stroke();
+  items.forEach((item, index) => { const x = xAt(index), y = yAt(item.amount); ctx.beginPath(); ctx.arc(x, y, 3, 0, Math.PI * 2); ctx.fillStyle = chartPoint; ctx.fill(); ctx.strokeStyle = accent; ctx.stroke(); ctx.fillStyle = chartMuted; ctx.textAlign = "center"; ctx.fillText(item.month.slice(5), x, height - 10); });
 }
 
 function drawDonut(items) {
@@ -363,9 +546,9 @@ function drawDonut(items) {
   const { ctx, width, height } = prepareCanvas(canvas, 180); ctx.clearRect(0, 0, width, height);
   const total = items.reduce((sum, item) => sum + Number(item.amount || 0), 0); const cx = width / 2, cy = height / 2, radius = Math.min(width, height) * .34;
   let angle = -Math.PI / 2;
-  if (!total) { ctx.beginPath(); ctx.arc(cx, cy, radius, 0, Math.PI * 2); ctx.strokeStyle = "rgba(255,255,255,.06)"; ctx.lineWidth = 20; ctx.stroke(); }
+  if (!total) { ctx.beginPath(); ctx.arc(cx, cy, radius, 0, Math.PI * 2); ctx.strokeStyle = cssVar("--chart-grid", "rgba(255,255,255,.10)"); ctx.lineWidth = 20; ctx.stroke(); }
   items.slice(0, 7).forEach((item) => { const portion = item.amount / total * Math.PI * 2; ctx.beginPath(); ctx.arc(cx, cy, radius, angle, angle + portion - .02); ctx.strokeStyle = item.color; ctx.lineWidth = 20; ctx.stroke(); angle += portion; });
-  ctx.fillStyle = "#71869a"; ctx.font = "8px Bahnschrift"; ctx.textAlign = "center"; ctx.fillText("TOTAL", cx, cy - 6); ctx.fillStyle = "#edf5fc"; ctx.font = "700 14px Bahnschrift"; ctx.fillText(money(total), cx, cy + 12);
+  ctx.fillStyle = cssVar("--chart-muted", "#71869a"); ctx.font = "9px Bahnschrift"; ctx.textAlign = "center"; ctx.fillText("总计", cx, cy - 6); ctx.fillStyle = cssVar("--text", "#edf5fc"); ctx.font = "700 14px Bahnschrift"; ctx.fillText(money(total), cx, cy + 12);
   $("categoryLegend").innerHTML = items.slice(0, 6).map((item) => `<div><i style="background:${escapeHtml(item.color)}"></i><span>${escapeHtml(item.name)}</span><b>${money(item.amount)}</b></div>`).join("") || `<div><span>暂无分类数据</span></div>`;
 }
 
@@ -533,7 +716,8 @@ async function saveInvoiceForm(event) {
 }
 
 async function deleteInvoiceRecord(id) {
-  const item = state.invoices.find((value) => value.id === id); if (!confirm(`确认删除“${item?.vendor || "该发票"}”？删除前会自动建立回溯版本。`)) return;
+  const item = state.invoices.find((value) => value.id === id);
+  if (!await confirmAction(`即将删除“${item?.vendor || "该发票"}”。系统会先自动建立回溯版本，之后可由管理员恢复。`, { title: "删除发票记录", confirmText: "删除", tone: "danger" })) return;
   try { await api(`/api/invoices/${encodeURIComponent(id)}`, { method: "DELETE" }); toast("发票记录已删除"); await loadInvoices(); }
   catch (error) { toast(error.message, "error"); }
 }
@@ -593,7 +777,7 @@ async function saveSettlement(event) {
 }
 
 async function deleteSettlement(id) {
-  if (!confirm("确认删除这条还款记录？")) return;
+  if (!await confirmAction("删除后将重新计算成员结算结果。", { title: "删除还款记录", confirmText: "删除", tone: "danger" })) return;
   try { await api(`/api/settlements/${encodeURIComponent(id)}`, { method: "DELETE" }); toast("还款记录已删除"); await loadSettlements(); }
   catch (error) { toast(error.message, "error"); }
 }
@@ -635,7 +819,8 @@ async function saveMember(event) {
 }
 
 async function archiveMember(id) {
-  const item = state.members.find((value) => value.id === id); if (!confirm(`确认停用成员“${item?.name}”？关联账号也会停用，历史账目仍保留。`)) return;
+  const item = state.members.find((value) => value.id === id);
+  if (!await confirmAction(`成员“${item?.name}”及其关联账号将被停用，历史账目仍会保留。`, { title: "停用成员", confirmText: "确认停用", tone: "warning" })) return;
   try { await api(`/api/members/${encodeURIComponent(id)}`, { method: "DELETE" }); toast("成员已停用"); await refreshCurrentView(true); }
   catch (error) { toast(error.message, "error"); }
 }
@@ -661,7 +846,7 @@ async function loadHistory() {
 }
 
 async function restoreSnapshot(id) {
-  if (!confirm("确认回溯到该版本？当前状态会先自动建立保护点，登录账号不会被回退。")) return;
+  if (!await confirmAction("当前状态会先自动建立保护点，然后恢复所选版本；登录账号不会被回退。", { title: "回溯历史版本", confirmText: "开始回溯", tone: "warning" })) return;
   loading(true, "正在恢复历史版本");
   try { const result = await api(`/api/admin/snapshots/${encodeURIComponent(id)}/restore`, { method: "POST" }); toast(result.message); await refreshCurrentView(true); }
   catch (error) { toast(error.message, "error"); }
@@ -669,7 +854,7 @@ async function restoreSnapshot(id) {
 }
 
 async function createSnapshotManually() {
-  const label = prompt("请输入版本名称", `手动版本 ${new Date().toLocaleString("zh-CN")}`); if (!label) return;
+  const label = await requestText("创建手动版本", `手动版本 ${new Date().toLocaleString("zh-CN")}`); if (!label) return;
   try { await api("/api/admin/snapshots", { method: "POST", body: { label, reason: "管理员手动建立" } }); toast("版本已建立"); await loadHistory(); }
   catch (error) { toast(error.message, "error"); }
 }
@@ -832,13 +1017,14 @@ function editClassificationRule(id) {
 }
 
 async function deleteClassificationRule(id) {
-  const rule = state.classificationRules.find((item) => item.id === id); if (!rule || !confirm(`确认删除规则“${rule.name}”？`)) return;
+  const rule = state.classificationRules.find((item) => item.id === id);
+  if (!rule || !await confirmAction(`规则“${rule.name}”将被删除，保存后不再参与发票分类。`, { title: "删除识别规则", confirmText: "删除规则", tone: "danger" })) return;
   state.classificationRules = state.classificationRules.filter((item) => item.id !== id);
   try { await persistClassificationRules("智能分类规则已删除"); resetClassificationEditor(); } catch (error) { toast(error.message, "error"); }
 }
 
 async function resetClassificationRules() {
-  if (!confirm("确认恢复系统默认智能分类规则？自定义规则将被替换。")) return;
+  if (!await confirmAction("全部自定义分类规则将被系统默认规则替换。", { title: "恢复默认识别规则", confirmText: "恢复默认", tone: "warning" })) return;
   try { const result = await api("/api/admin/classification-rules", { method: "PUT", body: { reset: true } }); state.classificationRules = result.items || []; renderClassificationRules(); resetClassificationEditor(); toast("已恢复默认智能分类规则"); }
   catch (error) { toast(error.message, "error"); }
 }
@@ -867,7 +1053,8 @@ async function syncNow() {
 }
 
 async function restoreBackup(file) {
-  if (!file || !confirm("恢复完整备份会替换当前账号、经费数据和设置。系统会先自动保存恢复前备份，是否继续？")) return;
+  if (!file) return;
+  if (!await confirmAction("恢复完整备份会替换当前账号、经费数据和设置。系统会先自动保存恢复前备份。", { title: "恢复完整备份", confirmText: "恢复备份", tone: "danger" })) { $("restoreBackupInput").value = ""; return; }
   const form = new FormData(); form.append("file", file); loading(true, "正在验证并恢复完整备份");
   try { const result = await api("/api/admin/restore-backup", { method: "POST", body: form }); toast(result.message); setTimeout(() => location.reload(), 1000); }
   catch (error) { toast(error.message, "error", 6000); }
@@ -875,12 +1062,33 @@ async function restoreBackup(file) {
 }
 
 async function deleteDemo() {
-  if (!confirm("仅删除初始演示发票与演示还款，不影响正式数据。确认继续？")) return;
+  if (!await confirmAction("仅删除初始演示发票与演示还款，不影响之后录入的正式数据。", { title: "清除演示数据", confirmText: "确认清除", tone: "warning" })) return;
   try { const result = await api("/api/admin/demo-data", { method: "DELETE" }); toast(`已清除 ${result.deleted_count} 条演示记录`); await refreshCurrentView(true); }
   catch (error) { toast(error.message, "error"); }
 }
 
 function setupEvents() {
+  $$('[data-theme-select]').forEach((select) => select.addEventListener("change", () => {
+    const mode = applyDisplayMode(select.value);
+    toast(`已切换为${DISPLAY_MODE_LABELS[mode]}`);
+  }));
+  $("decisionForm").addEventListener("submit", (event) => {
+    event.preventDefault();
+    const expectsInput = !$("decisionInputWrap").classList.contains("hidden");
+    finishDecision(expectsInput ? $("decisionInput").value.trim() : true);
+  });
+  $("decisionCancelBtn").addEventListener("click", () => finishDecision(false));
+  $("decisionDialog").addEventListener("cancel", (event) => { event.preventDefault(); finishDecision(false); });
+  $("decisionDialog").addEventListener("close", () => { if (state.decisionResolve) finishDecision(false); });
+  $("openShortcutsBtn").addEventListener("click", openShortcutSettings);
+  $("shortcutsForm").addEventListener("submit", saveShortcutSettings);
+  $("resetShortcutsBtn").addEventListener("click", resetShortcutSettings);
+  $("shortcutList").addEventListener("keydown", captureShortcut);
+  $("shortcutList").addEventListener("click", (event) => {
+    const clear = event.target.closest("[data-shortcut-clear]"); if (!clear) return;
+    state.shortcutDraft[clear.dataset.shortcutClear] = ""; renderShortcutEditor();
+  });
+  document.addEventListener("keydown", handleGlobalShortcut);
   $("toggleLoginPassword").addEventListener("click", () => {
     const visible = $("loginPassword").type === "text"; $("loginPassword").type = visible ? "password" : "text";
     $("toggleLoginPassword").textContent = visible ? "显示" : "隐藏"; $("toggleLoginPassword").setAttribute("aria-pressed", String(!visible)); $("toggleLoginPassword").setAttribute("aria-label", visible ? "显示密码" : "隐藏密码");
@@ -930,11 +1138,16 @@ function setupEvents() {
   $("openSyncBtn").addEventListener("click", openSync); $("syncForm").addEventListener("submit", saveSync); $("syncNowBtn").addEventListener("click", syncNow);
   $("restoreBackupInput").addEventListener("change", (event) => restoreBackup(event.target.files[0])); $("deleteDemoBtn").addEventListener("click", deleteDemo);
   $$('[data-close]').forEach((button) => button.addEventListener("click", () => $(button.dataset.close).close()));
-  $$("dialog").forEach((dialog) => dialog.addEventListener("click", (event) => { if (event.target === dialog) dialog.close(); }));
+  $$("dialog").forEach((dialog) => dialog.addEventListener("click", (event) => {
+    if (event.target !== dialog) return;
+    if (dialog.id === "decisionDialog") finishDecision(false); else dialog.close();
+  }));
   window.addEventListener("resize", () => { clearTimeout(state.resizeTimer); state.resizeTimer = setTimeout(() => { if (state.currentView === "dashboard") renderDashboard(); }, 160); });
 }
 
 async function initialize() {
+  state.shortcuts = loadShortcutSettings();
+  applyDisplayMode(savedDisplayMode(), false);
   setupEvents();
   await loadPublicAppearance();
   try { const current = await api("/api/auth/me"); state.csrf = current.csrf_token; state.user = current.user; await loadBootstrap(); }

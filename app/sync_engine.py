@@ -9,6 +9,7 @@ import threading
 from pathlib import Path
 from typing import Any
 
+from . import __version__
 from .attachments import attachment_path, find_blob
 from .config import TMP_DIR
 from .database import (
@@ -172,7 +173,7 @@ def _client():
 
 
 def _headers(secret: str) -> dict[str, str]:
-    return {"X-Sync-Key": secret, "User-Agent": "YanxiangExpenseV2/2.1"}
+    return {"X-Sync-Key": secret, "User-Agent": f"YanxiangExpenseV2/{__version__}"}
 
 
 def _push_blob(client: Any, remote_url: str, secret: str, sha256: str) -> None:
