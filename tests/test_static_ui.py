@@ -28,3 +28,22 @@ def test_custom_shortcut_editor_is_wired() -> None:
     assert "SHORTCUT_DEFINITIONS" in JS
     assert "handleGlobalShortcut" in JS
     assert "shortcutDuplicates" in JS
+
+
+def test_season_and_creator_interfaces_are_wired() -> None:
+    for element_id in (
+        "currentSeasonLabel",
+        "seasonManagerDialog",
+        "seasonManagerList",
+        "departmentManagerList",
+        "creatorDialog",
+        "creatorCards",
+    ):
+        assert f'id="{element_id}"' in HTML
+    assert 'data-view="creators"' in HTML
+    assert 'id="creatorsSection"' in HTML
+    assert "/api/admin/seasons" in JS
+    assert "/api/admin/departments" in JS
+    assert "/api/admin/creators" in JS
+    assert "openSeasonManager" in JS
+    assert "renderCreators" in JS

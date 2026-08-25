@@ -4,9 +4,9 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#07101b">
-  <title>燕翔车队经费管理系统 V2.2.0</title>
+  <title>燕翔车队经费管理系统 V2.2.1</title>
   <link rel="icon" href="/static/assets/team-logo.png">
-  <link rel="stylesheet" href="/static/app.css?v=2.2.0">
+  <link rel="stylesheet" href="/static/app.css?v=2.2.1">
 </head>
 <body>
   <div id="backgroundLayer" class="background-layer"><video id="appBackgroundVideo" muted loop autoplay playsinline></video></div>
@@ -30,7 +30,7 @@
       <div class="login-brand">
         <img src="/static/assets/team-logo.png" alt="燕翔车队队标">
         <div>
-          <p class="eyebrow">赛车运营 · V2.2.0</p>
+          <p class="eyebrow">赛车运营 · V2.2.1</p>
           <h1><span id="loginTeamName">燕翔车队</span><br><span>经费管理系统</span></h1>
         </div>
       </div>
@@ -57,7 +57,7 @@
         <img src="/static/assets/team-logo.png" alt="燕翔车队队标">
         <div><strong>燕翔车队</strong><small>经费控制</small></div>
       </div>
-      <div class="season-badge"><span>赛季</span><strong>2026</strong><i></i></div>
+      <button id="seasonBadgeBtn" type="button" class="season-badge" title="查看当前赛季"><span>当前赛季</span><strong id="currentSeasonLabel">2026赛季</strong><i></i></button>
       <nav id="mainNav" aria-label="主导航">
         <button data-view="dashboard" class="active"><span class="nav-icon">⌁</span><span>数据驾驶舱</span><em>01</em></button>
         <button data-view="invoices"><span class="nav-icon">▤</span><span>发票台账</span><em>02</em></button>
@@ -65,13 +65,14 @@
         <button data-view="reports"><span class="nav-icon">◫</span><span>分类统计</span><em>04</em></button>
         <button data-view="members"><span class="nav-icon">◎</span><span>成员与账号</span><em>05</em></button>
         <button data-view="history" data-admin><span class="nav-icon">↶</span><span>日志与回溯</span><em>06</em></button>
-        <button data-view="settings"><span class="nav-icon">⚙</span><span>系统设置</span><em>07</em></button>
+        <button data-view="creators"><span class="nav-icon">★</span><span>创作者</span><em>07</em></button>
+        <button data-view="settings"><span class="nav-icon">⚙</span><span>系统设置</span><em>08</em></button>
       </nav>
       <div class="sidebar-status">
         <div id="syncLamp" class="status-lamp"></div>
         <div><strong id="syncLabel">本地模式</strong><small id="syncDetail">数据安全保存在本机</small></div>
       </div>
-      <div class="sidebar-foot"><span>燕翔车队经费</span><span id="versionLabel">V2.2.0</span></div>
+      <div class="sidebar-foot"><span>燕翔车队经费</span><span id="versionLabel">V2.2.1</span></div>
     </aside>
 
     <div class="content-shell">
@@ -95,6 +96,7 @@
       </header>
 
       <main class="main-content">
+        <div id="seasonReadOnlyBanner" class="season-readonly-banner hidden"><b>历史赛季只读</b><span>当前正在查看已归档赛季，发票、成员和结算记录不能修改。</span></div>
         <section id="dashboardSection" class="view-section active">
           <div class="welcome-row">
             <div><p class="eyebrow">经费实时状态</p><h3>经费状态，一眼读懂</h3><p id="dashboardSubtitle">正在读取最新经费数据</p></div>
@@ -160,7 +162,7 @@
         </section>
 
         <section id="membersSection" class="view-section">
-          <div class="section-toolbar"><div><p class="eyebrow">成员权限</p><h3>成员与账号</h3><p>成员信息与登录账号分开管理，历史记录不会因成员停用而丢失。</p></div><div class="toolbar-actions" data-admin><button id="addUserBtn" class="btn secondary">＋ 新增账号</button><button id="addMemberBtn" class="btn primary">＋ 新增成员</button></div></div>
+          <div class="section-toolbar"><div><p class="eyebrow">成员权限</p><h3>成员与账号</h3><p>成员信息与登录账号分开管理，历史记录不会因成员停用而丢失。</p></div><div class="toolbar-actions write-only" data-admin><button id="addUserBtn" class="btn secondary">＋ 新增账号</button><button id="addMemberBtn" class="btn primary">＋ 新增成员</button></div></div>
           <div id="memberCards" class="member-cards"></div>
           <article class="panel" data-admin><div class="panel-heading"><div><p class="eyebrow">登录账号</p><h3>登录账号与权限</h3></div></div><div class="table-scroll"><table><thead><tr><th>账号</th><th>显示名</th><th>关联成员</th><th>角色</th><th>状态</th><th>操作</th></tr></thead><tbody id="userTable"></tbody></table></div></article>
         </section>
@@ -170,9 +172,16 @@
           <div class="two-column history-grid"><article class="panel"><div class="panel-heading"><h3>可回溯版本</h3><span class="panel-tag">最多 100 个</span></div><div id="snapshotList" class="version-list"></div></article><article class="panel"><div class="panel-heading"><h3>操作日志</h3></div><div id="auditList" class="audit-list"></div></article></div>
         </section>
 
+        <section id="creatorsSection" class="view-section">
+          <div class="section-toolbar"><div><p class="eyebrow">项目署名</p><h3>创作者名单</h3><p>展示当前赛季参与软件建设与维护的车队成员。</p></div><button id="addCreatorBtn" class="btn primary hidden" data-admin>＋ 添加创作者</button></div>
+          <div id="creatorSeasonHeading" class="creator-season-heading"></div>
+          <div id="creatorCards" class="creator-cards"></div>
+        </section>
+
         <section id="settingsSection" class="view-section">
           <div class="section-toolbar"><div><p class="eyebrow">系统配置</p><h3>系统设置</h3><p>配置账号、视觉、云端同步与数据维护。</p></div></div>
           <div class="settings-grid">
+            <article class="panel setting-card" data-admin><div class="setting-icon">赛季</div><div><h3>赛季与长期组别</h3><p>创建、切换、重命名和归档赛季；组别跨赛季保留。</p><button id="openSeasonManagerBtn" class="btn secondary">管理赛季</button></div></article>
             <article class="panel setting-card"><div class="setting-icon">账号</div><div><h3>我的账号</h3><p>修改当前账号与密码。</p><button id="changeCredentialsBtn" class="btn secondary">修改登录信息</button></div></article>
             <article class="panel setting-card"><div class="setting-icon">键</div><div><h3>自定义快捷键</h3><p>为录入、搜索、页面切换和主题切换设置按键组合。</p><button id="openShortcutsBtn" class="btn secondary">配置快捷键</button></div></article>
             <article class="panel setting-card write-only"><div class="setting-icon">选项</div><div><h3>分类与资金来源</h3><p>维护录入发票时可选的费用分类和资金来源。</p><button id="openReferencesBtn" class="btn secondary">管理选项</button></div></article>
@@ -273,7 +282,7 @@
 
   <dialog id="settlementDialog" class="modal small-modal"><form id="settlementForm" class="modal-card"><header><div><p class="eyebrow">成员还款</p><h3>登记成员还款</h3></div><button type="button" class="dialog-close" data-close="settlementDialog">×</button></header><div class="form-grid two"><label><span>付款成员</span><select id="settlementFrom" required></select></label><label><span>收款成员</span><select id="settlementTo" required></select></label><label><span>金额 / 元</span><input id="settlementAmount" type="number" min="0.01" step="0.01" required></label><label><span>还款日期</span><input id="settlementDate" type="date" required></label></div><label class="full-label"><span>备注</span><textarea id="settlementNote" rows="2"></textarea></label><footer><button type="button" class="btn secondary" data-close="settlementDialog">取消</button><button class="btn primary">确认登记</button></footer></form></dialog>
 
-  <dialog id="memberDialog" class="modal"><form id="memberForm" class="modal-card"><header><div><p class="eyebrow">车队成员</p><h3 id="memberDialogTitle">新增成员</h3></div><button type="button" class="dialog-close" data-close="memberDialog">×</button></header><input id="memberId" type="hidden"><div class="form-grid two"><label><span>姓名 *</span><input id="memberName" required></label><label><span>所属组别</span><input id="memberDepartment" placeholder="车架组 / 电气组等"></label><label><span>学号</span><input id="memberStudentId"></label><label><span>手机号</span><input id="memberPhone"></label><label><span>邮箱</span><input id="memberEmail" type="email"></label><label><span>标识色</span><input id="memberColor" type="color" value="#27d3ff"></label></div><footer><button type="button" class="btn secondary" data-close="memberDialog">取消</button><button class="btn primary">保存成员</button></footer></form></dialog>
+  <dialog id="memberDialog" class="modal"><form id="memberForm" class="modal-card"><header><div><p class="eyebrow">车队成员</p><h3 id="memberDialogTitle">新增成员</h3></div><button type="button" class="dialog-close" data-close="memberDialog">×</button></header><input id="memberId" type="hidden"><div class="form-grid two"><label><span>姓名 *</span><input id="memberName" required></label><label><span>所属组别</span><input id="memberDepartment" list="departmentOptions" placeholder="选择或输入长期保留组别"><datalist id="departmentOptions"></datalist></label><label><span>学号</span><input id="memberStudentId"></label><label><span>手机号</span><input id="memberPhone"></label><label><span>邮箱</span><input id="memberEmail" type="email"></label><label><span>标识色</span><input id="memberColor" type="color" value="#27d3ff"></label></div><footer><button type="button" class="btn secondary" data-close="memberDialog">取消</button><button class="btn primary">保存成员</button></footer></form></dialog>
 
   <dialog id="userDialog" class="modal"><form id="userForm" class="modal-card"><header><div><p class="eyebrow">登录账号</p><h3 id="userDialogTitle">新增账号</h3></div><button type="button" class="dialog-close" data-close="userDialog">×</button></header><input id="editUserId" type="hidden"><div class="form-grid two"><label><span>登录账号 *</span><input id="editUsername" required></label><label><span>显示名称 *</span><input id="editDisplayName" required></label><label><span>关联成员</span><select id="editUserMember"><option value="">不关联</option></select></label><label><span>权限角色</span><select id="editUserRole"><option value="member">成员 - 可增删改</option><option value="viewer">公共查看 - 只读</option><option value="admin">管理员 - 全部权限</option></select></label><label><span>设置密码</span><input id="editUserPassword" type="password" placeholder="编辑时留空表示不修改"></label><label class="switch-label"><span>账号启用</span><input id="editUserActive" type="checkbox" checked></label></div><footer><button type="button" class="btn secondary" data-close="userDialog">取消</button><button class="btn primary">保存账号</button></footer></form></dialog>
 
@@ -368,10 +377,45 @@
 
   <dialog id="syncDialog" class="modal small-modal"><form id="syncForm" class="modal-card"><header><div><p class="eyebrow">云端同步</p><h3>云端自动同步</h3></div><button type="button" class="dialog-close" data-close="syncDialog">×</button></header><label class="switch-row"><span><b>启用自动同步</b><small>断网时写入本地队列，联网后自动双向同步</small></span><input id="syncEnabled" type="checkbox"></label><label class="full-label"><span>云端服务器地址</span><input id="remoteUrl" type="url" placeholder="https://finance.example.com"></label><label class="full-label"><span>同步密钥</span><input id="syncSecret" type="password" placeholder="已配置时可留空"><small>必须与 Linux 云端部署配置一致</small></label><div id="syncDialogStatus" class="sync-dialog-status"></div><footer><button id="syncNowBtn" type="button" class="btn secondary">立即同步</button><button class="btn primary">保存配置</button></footer></form></dialog>
 
+  <dialog id="seasonManagerDialog" class="modal large-modal">
+    <div class="modal-card">
+      <header><div><p class="eyebrow">管理员功能</p><h3>赛季与长期组别</h3></div><button type="button" class="dialog-close" data-close="seasonManagerDialog">×</button></header>
+      <div class="season-manager-layout">
+        <section class="season-manager-pane">
+          <div class="reference-pane-heading"><div><span>赛季列表</span><small>切换赛季会自动隔离账目、成员及成员账号</small></div></div>
+          <form id="seasonCreateForm" class="season-create-form"><label><span>新赛季名称</span><input id="seasonNameInput" maxlength="40" required placeholder="例如：2027赛季"></label><button class="btn primary">＋ 创建赛季</button></form>
+          <div id="seasonManagerList" class="season-manager-list"></div>
+        </section>
+        <section class="season-manager-pane">
+          <div class="reference-pane-heading"><div><span>长期保留组别</span><small>创建新赛季后仍可直接选择，历史成员组别不会被删除</small></div></div>
+          <form id="departmentCreateForm" class="season-create-form"><label><span>组别名称</span><input id="departmentNameInput" maxlength="80" required placeholder="例如：电气部"></label><button class="btn primary">＋ 添加组别</button></form>
+          <div id="departmentManagerList" class="department-manager-list"></div>
+        </section>
+      </div>
+      <footer><button type="button" class="btn primary" data-close="seasonManagerDialog">完成</button></footer>
+    </div>
+  </dialog>
+
+  <dialog id="creatorDialog" class="modal">
+    <form id="creatorForm" class="modal-card">
+      <header><div><p class="eyebrow">创作者名单</p><h3 id="creatorDialogTitle">添加创作者</h3></div><button type="button" class="dialog-close" data-close="creatorDialog">×</button></header>
+      <input id="creatorId" type="hidden">
+      <div class="form-grid two">
+        <label><span>赛季 *</span><select id="creatorSeason" required></select></label>
+        <label><span>姓名 *</span><input id="creatorName" maxlength="80" required></label>
+        <label><span>所属组别</span><input id="creatorDepartment" list="departmentOptions" maxlength="80" placeholder="例如：电气部"></label>
+        <label><span>职责</span><input id="creatorRole" maxlength="80" placeholder="例如：高压"></label>
+        <label class="switch-label"><span>显示在名单中</span><input id="creatorActive" type="checkbox" checked></label>
+      </div>
+      <label class="full-label"><span>说明</span><textarea id="creatorNote" rows="3" maxlength="500" placeholder="负责内容或署名说明"></textarea></label>
+      <footer><button id="deleteCreatorBtn" type="button" class="btn danger subtle hidden">删除记录</button><span></span><button type="button" class="btn secondary" data-close="creatorDialog">取消</button><button class="btn primary">保存创作者</button></footer>
+    </form>
+  </dialog>
+
   <dialog id="updateDialog" class="modal">
     <div class="modal-card">
       <header><div><p class="eyebrow">版本管理</p><h3>更新日志与自动更新</h3></div><button type="button" class="dialog-close" data-close="updateDialog">×</button></header>
-      <div class="update-current"><div><span>当前版本</span><strong id="updateCurrentVersion">V2.2.0</strong></div><label class="mini-switch"><input id="autoUpdateCheck" type="checkbox" checked><span>启动后自动检查</span></label></div>
+      <div class="update-current"><div><span>当前版本</span><strong id="updateCurrentVersion">V2.2.1</strong></div><label class="mini-switch"><input id="autoUpdateCheck" type="checkbox" checked><span>启动后自动检查</span></label></div>
       <div class="update-actions"><button id="checkUpdateBtn" type="button" class="btn secondary">检查 GitHub 新版本</button><a id="updateReleaseLink" class="btn secondary hidden" target="_blank" rel="noopener">查看发布页面</a><button id="installUpdateBtn" type="button" class="btn primary hidden">一键更新到最新版</button></div>
       <div id="updateStatus" class="update-status">正在读取本地更新日志……</div>
       <div id="changelogList" class="changelog-list"></div>
@@ -387,6 +431,6 @@
       <small id="loadingDetail">任务正在本机运行，请勿关闭软件</small>
     </div>
   </div>
-  <script src="/static/app.js?v=2.2.0"></script>
+  <script src="/static/app.js?v=2.2.1"></script>
 </body>
 </html>

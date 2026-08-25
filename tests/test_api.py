@@ -268,3 +268,107 @@ def test_v22_multiple_file_import_and_editable_loading_cars():
         assert saved.json()["settings"]["loading_cars"][0]["title"] == "自定义测试赛车"
         public = client.get("/api/public/appearance").json()["settings"]
         assert public["loading_cars"][0]["url"].startswith("/api/public/media/")
+
+
+def test_v221_season_isolation_and_creator_management():
+    with TestClient(app) as admin:
+        _, headers = login(admin, "admin", "YXRT@2026")
+        initial = admin.get("/api/bootstrap").json()
+        season_2026 = initial["season"]
+        assert season_2026["name"] == "2026赛季"
+        assert season_2026["is_open"] is True
+        assert initial["members"]
+        assert initial["dashboard"]["invoice_count"] > 0
+        assert any(
+            item["name"] == "刘松宁" and item["department"] == "电气部" and item["role_title"] == "高压"
+            for item in initial["creators"]
+        )
+
+        created = admin.post("/api/admin/seasons", json={"name": "2027赛季"}, headers=headers)
+        assert created.status_code == 200, created.text
+        season_2027 = created.json()
+        switched = admin.post(f"/api/admin/seasons/{season_2027['id']}/switch", headers=headers)
+        assert switched.status_code == 200, switched.text
+        fresh = admin.get("/api/bootstrap").json()
+        assert fresh["season"]["name"] == "2027赛季"
+        assert fresh["members"] == []
+        assert fresh["dashboard"]["invoice_count"] == 0
+        assert {item["name"] for item in fresh["departments"]}.issuperset({"电气部", "底盘部", "车身部", "市场部"})
+
+        creator = admin.post(
+            "/api/admin/creators",
+            json={"name": "测试创作者", "department": "电气部", "role_title": "低压", "note": "赛季隔离测试"},
+            headers=headers,
+        )
+        assert creator.status_code == 200, creator.text
+        assert creator.json()["season_id"] == season_2027["id"]
+        member = admin.post(
+            "/api/members", json={"name": "2027成员", "department": "电气部"}, headers=headers
+        )
+        assert member.status_code == 200, member.text
+        account = admin.post(
+            "/api/admin/users",
+            json={
+                "username": "season2027member", "display_name": "2027成员",
+                "member_id": member.json()["id"], "role": "member", "password": "Season2027",
+            },
+            headers=headers,
+        )
+        assert account.status_code == 200, account.text
+
+        with TestClient(app) as old_member:
+            denied = old_member.post("/api/auth/login", json={"username": "member01", "password": "Member@2026"})
+            assert denied.status_code == 401
+        with TestClient(app) as new_member:
+            payload, _ = login(new_member, "season2027member", "Season2027")
+            assert payload["user"]["role"] == "member"
+            assert new_member.get("/api/creators").json()["items"][0]["name"] == "测试创作者"
+
+        snapshot = admin.post(
+            "/api/admin/snapshots", json={"label": "2027赛季隔离回溯测试"}, headers=headers
+        )
+        assert snapshot.status_code == 200, snapshot.text
+        added_after_snapshot = admin.post(
+            "/api/members", json={"name": "回溯后新增成员", "department": "底盘部"}, headers=headers
+        )
+        assert added_after_snapshot.status_code == 200, added_after_snapshot.text
+
+        assert admin.post(f"/api/admin/seasons/{season_2026['id']}/switch", headers=headers).status_code == 200
+        restored = admin.get("/api/bootstrap").json()
+        assert restored["season"]["name"] == "2026赛季"
+        assert restored["members"]
+        assert all(item["name"] != "2027成员" for item in restored["members"])
+        assert any(item["name"] == "刘松宁" for item in restored["creators"])
+
+        member_count_2026 = len(restored["members"])
+        assert admin.post(f"/api/admin/seasons/{season_2027['id']}/switch", headers=headers).status_code == 200
+        rollback = admin.post(
+            f"/api/admin/snapshots/{snapshot.json()['id']}/restore", headers=headers
+        )
+        assert rollback.status_code == 200, rollback.text
+        season_after_rollback = admin.get("/api/bootstrap").json()
+        assert any(item["name"] == "2027成员" for item in season_after_rollback["members"])
+        assert all(item["name"] != "回溯后新增成员" for item in season_after_rollback["members"])
+        assert admin.post(f"/api/admin/seasons/{season_2026['id']}/switch", headers=headers).status_code == 200
+        assert len(admin.get("/api/bootstrap").json()["members"]) == member_count_2026
+
+        with TestClient(app) as viewer:
+            _, viewer_headers = login(viewer, "viewer", "View@2026")
+            assert any(item["name"] == "刘松宁" for item in viewer.get("/api/creators").json()["items"])
+            assert len(viewer.get("/api/seasons").json()["items"]) == 1
+            denied_creator_edit = viewer.post(
+                "/api/admin/creators", json={"name": "禁止编辑"}, headers=viewer_headers
+            )
+            assert denied_creator_edit.status_code == 403
+
+        archived = admin.put(
+            f"/api/admin/seasons/{season_2027['id']}",
+            json={"name": "2027赛季", "active": False},
+            headers=headers,
+        )
+        assert archived.status_code == 200, archived.text
+        assert admin.post(f"/api/admin/seasons/{season_2027['id']}/switch", headers=headers).status_code == 200
+        assert admin.get("/api/bootstrap").json()["season"]["is_open"] is False
+        read_only = admin.post("/api/members", json={"name": "禁止新增"}, headers=headers)
+        assert read_only.status_code == 403
+        assert admin.post(f"/api/admin/seasons/{season_2026['id']}/switch", headers=headers).status_code == 200

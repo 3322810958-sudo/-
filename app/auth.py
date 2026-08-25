@@ -8,7 +8,7 @@ from typing import Any
 from fastapi import HTTPException, Request, Response, status
 
 from .config import COOKIE_SECURE, SESSION_HOURS
-from .database import audit, get_device_id, new_id, transaction, utc_now
+from .database import audit, current_season, get_device_id, new_id, transaction, utc_now
 from .security import new_token, token_hash, validate_new_password, validate_username, verify_password, hash_password
 
 
@@ -22,6 +22,7 @@ class AuthContext:
 
 
 def public_user(user: dict[str, Any]) -> dict[str, Any]:
+    season_open = bool(user.get("season_active", True))
     return {
         "id": user["id"],
         "member_id": user.get("member_id"),
@@ -30,7 +31,7 @@ def public_user(user: dict[str, Any]) -> dict[str, Any]:
         "role": user["role"],
         "must_change_password": bool(user["must_change_password"]),
         "permissions": {
-            "write": user["role"] in {"admin", "member"},
+            "write": user["role"] in {"admin", "member"} and season_open,
             "manage_users": user["role"] == "admin",
             "restore_versions": user["role"] == "admin",
             "manage_settings": user["role"] == "admin",
@@ -48,6 +49,18 @@ def login(username: str, password: str, response: Response) -> dict[str, Any]:
         if not user_row or not verify_password(str(password or ""), user_row["password_hash"]):
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="账号或密码不正确")
         user = dict(user_row)
+        season = current_season(conn)
+        if user["role"] == "member":
+            member = conn.execute(
+                """SELECT season_id FROM members WHERE id=? AND season_id=? AND active=1 AND deleted_at IS NULL""",
+                (user.get("member_id"), season["id"]),
+            ).fetchone()
+            if not member:
+                raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="该成员账号不属于当前赛季")
+            user["season_id"] = str(member["season_id"])
+        else:
+            user["season_id"] = season["id"]
+        user["season_active"] = bool(season["active"])
         raw_token = new_token()
         csrf = new_token(20)
         now = datetime.now(UTC)
@@ -99,6 +112,18 @@ def get_auth(request: Request) -> AuthContext:
         data = dict(row)
         session = {"id": data.pop("session_id"), "csrf_token": data.pop("csrf_token"),
                    "expires_at": data.pop("expires_at"), "last_seen_at": data.pop("last_seen_at")}
+        season = current_season(conn)
+        if data["role"] == "member":
+            member = conn.execute(
+                """SELECT season_id FROM members WHERE id=? AND season_id=? AND active=1 AND deleted_at IS NULL""",
+                (data.get("member_id"), season["id"]),
+            ).fetchone()
+            if not member:
+                raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="当前赛季已切换，请重新登录")
+            data["season_id"] = str(member["season_id"])
+        else:
+            data["season_id"] = season["id"]
+        data["season_active"] = bool(season["active"])
         conn.execute("UPDATE sessions SET last_seen_at=? WHERE id=?", (now, session["id"]))
     return AuthContext(user=data, session=session)
 
@@ -112,6 +137,8 @@ def require_csrf(request: Request, auth: AuthContext) -> None:
 def require_write(auth: AuthContext) -> None:
     if auth.user["role"] not in {"admin", "member"}:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="公共账号仅可查看与导出")
+    if not bool(auth.user.get("season_active", True)):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="归档赛季为只读状态，请切换到进行中的赛季")
 
 
 def require_admin(auth: AuthContext) -> None:

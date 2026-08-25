@@ -12,7 +12,7 @@ from typing import Any, BinaryIO
 from fastapi import UploadFile
 
 from .config import SUPPORTED_EXTENSIONS, TMP_DIR, UPLOAD_DIR
-from .database import audit, enqueue_sync_event, get_device_id, new_id, transaction, utc_now
+from .database import audit, current_season_id, enqueue_sync_event, get_device_id, new_id, transaction, utc_now
 
 
 def attachment_path(stored_name: str) -> Path:
@@ -79,14 +79,16 @@ def register_attachment(
     user: dict[str, Any],
 ) -> dict[str, Any]:
     with transaction() as conn:
+        season_id = current_season_id(conn)
         existing = conn.execute(
-            "SELECT * FROM attachments WHERE sha256=? AND deleted_at IS NULL", (checksum,)
+            "SELECT * FROM attachments WHERE sha256=? AND season_id=? AND deleted_at IS NULL", (checksum, season_id)
         ).fetchone()
         if existing:
             return dict(existing)
         now = utc_now()
         row = {
-            "id": new_id("attachment"), "original_name": original_name[:255], "stored_name": stored_name,
+            "id": new_id("attachment"), "season_id": season_id,
+            "original_name": original_name[:255], "stored_name": stored_name,
             "mime_type": mime_type[:120], "size_bytes": size, "sha256": checksum,
             "uploaded_by": user["id"], "created_at": now, "updated_at": now,
             "version": 1, "device_id": get_device_id(conn), "deleted_at": None,

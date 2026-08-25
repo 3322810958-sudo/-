@@ -28,7 +28,7 @@ SYNC_LOCK = threading.Lock()
 ALLOWED_SETTINGS = {
     "team_name", "background_image", "background_media_id", "background_media_kind",
     "background_overlay", "accent_color", "login_slideshow_enabled", "login_slides",
-    "login_transition", "classification_rules",
+    "login_transition", "loading_cars", "classification_rules", "current_season_id",
 }
 
 

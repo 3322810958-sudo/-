@@ -2,6 +2,7 @@
 
 const state = {
   csrf: "", user: null, members: [], categories: [], fundingSources: [], productTypes: [],
+  season: null, seasons: [], departments: [], creators: [],
   settings: {}, dashboard: null, invoices: [], users: [], currentView: "dashboard", socket: null,
   resizeTimer: null, publicSettings: {}, loginSlideTimer: null, loginSlideIndex: 0,
   loginActiveLayer: "A", appearanceSlides: [], appearanceBackground: null,
@@ -9,7 +10,7 @@ const state = {
   wallpapers: [], classificationRules: [], decisionResolve: null,
   shortcuts: {}, shortcutDraft: {},
   loadingTimer: null, loadingProgress: 0, loadingToken: 0, updateRelease: null,
-  version: "2.2.0", updateJobId: "",
+  version: "2.2.1", updateJobId: "",
 };
 
 const DISPLAY_MODE_KEY = "yanxiang-display-mode";
@@ -32,7 +33,8 @@ const SHORTCUT_DEFINITIONS = [
   { id: "reports", label: "分类统计", description: "切换到分类统计", defaultKey: "Alt+4" },
   { id: "members", label: "成员与账号", description: "切换到成员与账号", defaultKey: "Alt+5" },
   { id: "history", label: "日志与回溯", description: "管理员切换到版本回溯", defaultKey: "Alt+6" },
-  { id: "settings", label: "系统设置", description: "切换到系统设置", defaultKey: "Alt+7" },
+  { id: "creators", label: "创作者名单", description: "查看当前赛季创作者", defaultKey: "Alt+7" },
+  { id: "settings", label: "系统设置", description: "切换到系统设置", defaultKey: "Alt+8" },
   { id: "cycle_theme", label: "切换显示模式", description: "循环切换三种显示模式", defaultKey: "Alt+T" },
 ];
 const DEFAULT_SHORTCUTS = Object.fromEntries(SHORTCUT_DEFINITIONS.map((item) => [item.id, item.defaultKey]));
@@ -45,7 +47,7 @@ const escapeHtml = (value) => String(value ?? "").replace(/[&<>'"]/g, (char) => 
 const roleLabel = (role) => ({ admin: "管理员", member: "成员", viewer: "公共只读" }[role] || role);
 const statusLabel = (status) => ({ pending: "未报销", partial: "部分报销", reimbursed: "已报销" }[status] || status);
 const burdenLabel = (type) => ({ team_aa: "全队 AA", specified_split: "指定成员", self_paid: "个人承担" }[type] || type);
-const actionLabel = (action) => ({ create: "新增", update: "修改", delete: "删除", login: "登录", logout: "退出", restore: "版本回溯", upload: "上传附件", seed: "初始化", archive: "停用", sync_apply: "同步应用", sync_conflict: "同步冲突", create_snapshot: "建立版本", delete_demo: "清除演示数据", batch_import: "批量导入", batch_delete: "批量删除", batch_category: "批量修改分类", batch_status: "批量修改状态", ocr_complete: "OCR 完成", change_credentials: "修改账号" }[action] || action);
+const actionLabel = (action) => ({ create: "新增", update: "修改", delete: "删除", login: "登录", logout: "退出", restore: "版本回溯", upload: "上传附件", seed: "初始化", archive: "停用", switch: "切换赛季", sync_apply: "同步应用", sync_conflict: "同步冲突", create_snapshot: "建立版本", delete_demo: "清除演示数据", batch_import: "批量导入", batch_delete: "批量删除", batch_category: "批量修改分类", batch_status: "批量修改状态", ocr_complete: "OCR 完成", change_credentials: "修改账号" }[action] || action);
 
 function savedDisplayMode() {
   try {
@@ -195,7 +197,7 @@ async function runShortcutAction(action) {
     await navigate("invoices"); $("invoiceSearch").focus(); $("invoiceSearch").select(); return;
   }
   if (action === "history" && !isAdmin()) return toast("版本回溯仅管理员可用", "error");
-  if (["dashboard", "invoices", "settlements", "reports", "members", "history", "settings"].includes(action)) await navigate(action);
+  if (["dashboard", "invoices", "settlements", "reports", "members", "history", "creators", "settings"].includes(action)) await navigate(action);
 }
 
 function handleGlobalShortcut(event) {
@@ -209,7 +211,7 @@ function handleGlobalShortcut(event) {
   runShortcutAction(action).catch((error) => toast(error.message, "error"));
 }
 
-function canWrite() { return Boolean(state.user?.permissions?.write); }
+function canWrite() { return Boolean(state.user?.permissions?.write) && state.season?.is_open !== false; }
 function isAdmin() { return state.user?.role === "admin"; }
 
 async function api(path, options = {}) {
@@ -388,13 +390,18 @@ function applyTheme() {
     if (video.getAttribute("src") !== mediaUrl) video.src = mediaUrl;
     video.classList.add("active"); video.play().catch(() => {});
   } else { video.pause(); video.removeAttribute("src"); video.load(); video.classList.remove("active"); }
-  document.title = `${settings.team_name || "燕翔车队"} · 经费管理系统 V2.2.0`;
+  document.title = `${settings.team_name || "燕翔车队"} · 经费管理系统 V${state.version || "2.2.1"}`;
 }
 
 function applyAccess() {
   $$('[data-admin]').forEach((element) => element.classList.toggle("hidden", !isAdmin()));
-  $$(".write-only").forEach((element) => element.classList.toggle("hidden", !canWrite()));
+  $$(".write-only").forEach((element) => element.classList.toggle("hidden", !canWrite() || (element.hasAttribute("data-admin") && !isAdmin())));
   if (!isAdmin() && state.currentView === "history") navigate("dashboard");
+  const season = state.season || { name: "2026赛季", is_open: true };
+  $("currentSeasonLabel").textContent = season.name || "2026赛季";
+  $("seasonBadgeBtn").classList.toggle("archived", season.is_open === false);
+  $("seasonBadgeBtn").title = isAdmin() ? "管理和切换赛季" : `当前赛季：${season.name || "2026赛季"}`;
+  $("seasonReadOnlyBanner").classList.toggle("hidden", season.is_open !== false);
   $("userName").textContent = state.user.display_name;
   $("userRole").textContent = roleLabel(state.user.role);
   $("userAvatar").textContent = state.user.display_name.slice(0, 1);
@@ -428,11 +435,14 @@ async function loadBootstrap() {
   state.members = data.members || [];
   state.categories = data.categories || [];
   state.fundingSources = data.funding_sources || [];
+  state.departments = data.departments || [];
+  state.creators = data.creators || [];
+  state.season = data.season || null;
   state.productTypes = data.product_types || [];
   state.settings = data.settings || {};
   state.dashboard = data.dashboard;
   state.sync = data.sync || {};
-  state.version = data.version || "2.2.0";
+  state.version = data.version || "2.2.1";
   $("versionLabel").textContent = `V${data.version}`;
   $("updateCurrentVersion").textContent = `V${state.version}`;
   state.publicSettings = state.settings; applyTheme(); applyAccess(); renderSync(state.sync); renderReferenceOptions(); renderDashboard(); showApp(); connectSocket();
@@ -454,6 +464,7 @@ function renderReferenceOptions() {
   ["invoiceSource", "batchSource"].forEach((id) => { $(id).innerHTML = `<option value="">未选择</option>${sourceOptions}`; });
   $("invoiceSourceFilter").innerHTML = `<option value="">全部来源</option>${sourceOptions}`;
   $("invoiceProduct").innerHTML = state.productTypes.map((item) => `<option>${escapeHtml(item)}</option>`).join("");
+  $("departmentOptions").innerHTML = state.departments.map((item) => `<option value="${escapeHtml(item.name)}"></option>`).join("");
   renderReferenceManagers();
 }
 
@@ -510,7 +521,7 @@ const routes = {
   dashboard: ["数据驾驶舱 / 01", "数据驾驶舱"], invoices: ["发票台账 / 02", "发票台账"],
   settlements: ["成员结算 / 03", "AA 结算"], reports: ["经费统计 / 04", "分类统计"],
   members: ["成员权限 / 05", "成员与账号"], history: ["版本控制 / 06", "日志与回溯"],
-  settings: ["系统配置 / 07", "系统设置"],
+  creators: ["项目署名 / 07", "创作者名单"], settings: ["系统配置 / 08", "系统设置"],
 };
 
 async function navigate(view) {
@@ -528,6 +539,7 @@ async function navigate(view) {
     if (view === "reports") await loadReports();
     if (view === "members") await loadMembersAndUsers();
     if (view === "history") await loadHistory();
+    if (view === "creators") await loadCreators();
   } catch (error) { toast(error.message, "error"); }
 }
 
@@ -552,15 +564,17 @@ function connectSocket() {
 async function refreshCurrentView(silent = false) {
   try {
     const data = await api("/api/bootstrap");
-    state.members = data.members; state.categories = data.categories; state.fundingSources = data.funding_sources;
+    state.user = data.user; state.members = data.members; state.categories = data.categories; state.fundingSources = data.funding_sources;
+    state.departments = data.departments || []; state.creators = data.creators || []; state.season = data.season || null;
     state.settings = data.settings; state.dashboard = data.dashboard; state.sync = data.sync; state.csrf = data.csrf_token;
-    state.publicSettings = state.settings; applyTheme(); renderReferenceOptions(); renderSync(state.sync);
+    state.publicSettings = state.settings; applyTheme(); applyAccess(); renderReferenceOptions(); renderSync(state.sync);
     if (state.currentView === "dashboard") renderDashboard();
     if (state.currentView === "invoices") await loadInvoices();
     if (state.currentView === "settlements") await loadSettlements();
     if (state.currentView === "reports") await loadReports();
     if (state.currentView === "members") await loadMembersAndUsers();
     if (state.currentView === "history" && isAdmin()) await loadHistory();
+    if (state.currentView === "creators") renderCreators();
     if (!silent) toast("数据已刷新");
   } catch (error) { if (!silent) toast(error.message, "error"); }
 }
@@ -575,7 +589,7 @@ function renderDashboard() {
   $("metricTotal").textContent = money(data.total_amount); $("metricPending").textContent = money(data.pending_amount);
   $("metricReimbursed").textContent = money(data.reimbursed_amount); $("metricAA").textContent = money(data.aa_outstanding);
   $("metricInvoiceCount").textContent = `${data.invoice_count || 0} 张发票`;
-  $("dashboardSubtitle").textContent = `${state.settings.team_name || "燕翔车队"} · ${data.invoice_count || 0} 笔有效记录`;
+  $("dashboardSubtitle").textContent = `${state.settings.team_name || "燕翔车队"} · ${state.season?.name || "当前赛季"} · ${data.invoice_count || 0} 笔有效记录`;
   $("recentTable").innerHTML = (data.recent || []).map((item) => `<tr>
     <td>${escapeHtml(item.invoice_date)}</td><td><span class="cell-main">${escapeHtml(item.vendor || "待补充")}</span><span class="cell-sub">${escapeHtml(item.product_type)}</span></td>
     <td>${colorTag(item.category_name || "未分类", item.category_color || "#9aa7b7")}</td><td>${escapeHtml(item.payer_name || "-")}</td>
@@ -1014,11 +1028,11 @@ async function loadMembersAndUsers() {
 }
 
 function renderMemberCards() {
-  $("memberCards").innerHTML = state.members.filter((item) => !item.deleted_at).map((item) => `<article class="member-card ${item.active ? "" : "inactive"}" style="--member-color:${escapeHtml(item.avatar_color)}"><header><span class="member-avatar">${escapeHtml(item.name.slice(0, 1))}</span><div><h4>${escapeHtml(item.name)}</h4><small>${escapeHtml(item.department || "未分组")}</small></div></header><p>${item.student_id ? `学号 ${escapeHtml(item.student_id)}<br>` : ""}${item.phone ? `电话 ${escapeHtml(item.phone)}<br>` : ""}${item.active ? "有效成员" : "已停用，历史数据保留"}</p>${isAdmin() ? `<footer><button class="row-action" data-member-edit="${escapeHtml(item.id)}">✎</button>${item.active ? `<button class="row-action delete" data-member-archive="${escapeHtml(item.id)}">×</button>` : ""}</footer>` : ""}</article>`).join("");
+  $("memberCards").innerHTML = state.members.filter((item) => !item.deleted_at).map((item) => `<article class="member-card ${item.active ? "" : "inactive"}" style="--member-color:${escapeHtml(item.avatar_color)}"><header><span class="member-avatar">${escapeHtml(item.name.slice(0, 1))}</span><div><h4>${escapeHtml(item.name)}</h4><small>${escapeHtml(item.department || "未分组")}</small></div></header><p>${item.student_id ? `学号 ${escapeHtml(item.student_id)}<br>` : ""}${item.phone ? `电话 ${escapeHtml(item.phone)}<br>` : ""}${item.active ? "有效成员" : "已停用，历史数据保留"}</p>${isAdmin() && canWrite() ? `<footer><button class="row-action" data-member-edit="${escapeHtml(item.id)}">✎</button>${item.active ? `<button class="row-action delete" data-member-archive="${escapeHtml(item.id)}">×</button>` : ""}</footer>` : ""}</article>`).join("");
 }
 
 function renderUsers() {
-  $("userTable").innerHTML = state.users.map((item) => `<tr><td><span class="cell-main">${escapeHtml(item.username)}</span></td><td>${escapeHtml(item.display_name)}</td><td>${escapeHtml(item.member_name || "-")}</td><td>${escapeHtml(roleLabel(item.role))}</td><td>${item.active ? `<span class="status-tag reimbursed">启用</span>` : `<span class="status-tag pending">停用</span>`}</td><td><button class="row-action" data-user-edit="${escapeHtml(item.id)}">✎</button></td></tr>`).join("") || emptyRow(6, "暂无账号");
+  $("userTable").innerHTML = state.users.map((item) => `<tr><td><span class="cell-main">${escapeHtml(item.username)}</span></td><td>${escapeHtml(item.display_name)}</td><td>${escapeHtml(item.member_name || "-")}</td><td>${escapeHtml(roleLabel(item.role))}</td><td>${item.active ? `<span class="status-tag reimbursed">启用</span>` : `<span class="status-tag pending">停用</span>`}</td><td>${canWrite() ? `<button class="row-action" data-user-edit="${escapeHtml(item.id)}">✎</button>` : "只读"}</td></tr>`).join("") || emptyRow(6, "暂无账号");
 }
 
 function openMember(item = null) {
@@ -1052,6 +1066,123 @@ async function saveUser(event) {
   const payload = { username: $("editUsername").value, display_name: $("editDisplayName").value, member_id: $("editUserMember").value, role: $("editUserRole").value, active: $("editUserActive").checked };
   if ($("editUserPassword").value) payload.password = $("editUserPassword").value;
   try { await api(id ? `/api/admin/users/${encodeURIComponent(id)}` : "/api/admin/users", { method: id ? "PUT" : "POST", body: payload }); $("userDialog").close(); toast("账号已保存"); await loadMembersAndUsers(); }
+  catch (error) { toast(error.message, "error"); }
+}
+
+async function loadCreators() {
+  const result = await api("/api/creators"); state.creators = result.items || []; renderCreators();
+}
+
+function renderCreators() {
+  const seasonName = state.season?.name || "当前赛季";
+  $("creatorSeasonHeading").innerHTML = `<b>${escapeHtml(seasonName)}</b><span>${state.creators.length} 位创作者</span>`;
+  $("creatorCards").innerHTML = state.creators.map((item) => `<article class="creator-card${item.active ? "" : " inactive"}">
+    <div class="creator-meta"><span>${escapeHtml(item.season_name || seasonName)}</span><span>${escapeHtml(item.department || "未填写组别")}</span><span>${escapeHtml(item.role_title || "创作者")}</span>${item.active ? "" : "<span>已隐藏</span>"}</div>
+    <h4>${escapeHtml(item.name)}</h4><p>${escapeHtml(item.note || "参与软件建设与维护")}</p>
+    ${isAdmin() ? `<footer><button class="row-action" data-creator-edit="${escapeHtml(item.id)}" title="编辑创作者">✎</button></footer>` : ""}
+  </article>`).join("") || `<div class="empty-state">${escapeHtml(seasonName)}尚未添加创作者名单</div>`;
+}
+
+async function loadSeasons() {
+  const result = await api("/api/seasons"); state.seasons = result.items || []; return state.seasons;
+}
+
+function renderDepartmentOptions() {
+  $("departmentOptions").innerHTML = state.departments.map((item) => `<option value="${escapeHtml(item.name)}"></option>`).join("");
+  $("departmentManagerList").innerHTML = state.departments.map((item) => `<span class="department-chip">${escapeHtml(item.name)}</span>`).join("") || `<div class="empty-state">暂无长期组别</div>`;
+}
+
+function renderSeasonManager() {
+  $("seasonManagerList").innerHTML = state.seasons.map((item) => `<article class="season-manager-item${item.is_current ? " current" : ""}${item.is_open ? "" : " archived"}">
+    <div><h4>${escapeHtml(item.name)} ${item.is_current ? "· 当前查看" : ""}</h4><p>${item.member_count || 0} 名成员 · ${item.invoice_count || 0} 张发票 · ${item.creator_count || 0} 位创作者 · ${item.is_open ? "进行中" : "已归档，只读"}</p></div>
+    <div class="season-actions">
+      ${item.is_current ? "" : `<button type="button" class="btn secondary" data-season-switch="${escapeHtml(item.id)}">查看 / 切换</button>`}
+      <button type="button" class="btn secondary" data-season-rename="${escapeHtml(item.id)}">重命名</button>
+      ${item.is_current ? "" : `<button type="button" class="btn ${item.is_open ? "danger subtle" : "secondary"}" data-season-toggle="${escapeHtml(item.id)}">${item.is_open ? "归档" : "重新启用"}</button>`}
+    </div>
+  </article>`).join("") || `<div class="empty-state">暂无赛季</div>`;
+  renderDepartmentOptions();
+}
+
+async function openSeasonManager() {
+  if (!isAdmin()) return toast(`当前赛季：${state.season?.name || "未设置"}`);
+  try { await loadSeasons(); renderSeasonManager(); $("seasonManagerDialog").showModal(); }
+  catch (error) { toast(error.message, "error"); }
+}
+
+async function createSeason(event) {
+  event.preventDefault();
+  try {
+    await api("/api/admin/seasons", { method: "POST", body: { name: $("seasonNameInput").value } });
+    $("seasonCreateForm").reset(); await loadSeasons(); renderSeasonManager(); toast("新赛季已创建，成员与成员账号为空");
+  } catch (error) { toast(error.message, "error"); }
+}
+
+async function switchSeason(item) {
+  if (!item) return;
+  const message = item.is_open
+    ? `切换到“${item.name}”后，只显示该赛季的账目、成员和成员账号。`
+    : `“${item.name}”已归档，切换后只能查看，不能修改账目、成员或结算记录。`;
+  if (!await confirmAction(message, { title: "切换赛季", confirmText: "确认切换", tone: "info" })) return;
+  try {
+    await api(`/api/admin/seasons/${encodeURIComponent(item.id)}/switch`, { method: "POST" });
+    $("seasonManagerDialog").close(); clearInvoiceSelection(); await refreshCurrentView(true); await navigate("dashboard");
+    toast(`已切换到${item.name}${item.is_open ? "" : "（只读）"}`, "success", 5000);
+  } catch (error) { toast(error.message, "error"); }
+}
+
+async function renameSeason(item) {
+  if (!item) return;
+  const result = await showDecision({ title: "重命名赛季", message: "修改只影响赛季显示名称，不会改变历史账目。", confirmText: "保存名称", tone: "info", eyebrow: "赛季设置", inputLabel: "赛季名称", inputValue: item.name });
+  if (typeof result !== "string" || !result.trim()) return;
+  try { await api(`/api/admin/seasons/${encodeURIComponent(item.id)}`, { method: "PUT", body: { name: result.trim(), active: item.is_open } }); await loadSeasons(); renderSeasonManager(); if (item.is_current) await refreshCurrentView(true); toast("赛季名称已更新"); }
+  catch (error) { toast(error.message, "error"); }
+}
+
+async function toggleSeason(item) {
+  if (!item || item.is_current) return;
+  const nextOpen = !item.is_open;
+  if (!nextOpen && !await confirmAction(`归档“${item.name}”后仍可切换查看，但所有赛季业务数据为只读。`, { title: "归档历史赛季", confirmText: "确认归档", tone: "warning" })) return;
+  try { await api(`/api/admin/seasons/${encodeURIComponent(item.id)}`, { method: "PUT", body: { name: item.name, active: nextOpen } }); await loadSeasons(); renderSeasonManager(); toast(nextOpen ? "赛季已重新启用" : "赛季已归档"); }
+  catch (error) { toast(error.message, "error"); }
+}
+
+async function createDepartment(event) {
+  event.preventDefault();
+  try {
+    const item = await api("/api/admin/departments", { method: "POST", body: { name: $("departmentNameInput").value } });
+    if (!state.departments.some((entry) => entry.id === item.id)) state.departments.push(item);
+    state.departments.sort((left, right) => String(left.name).localeCompare(String(right.name), "zh-CN"));
+    $("departmentCreateForm").reset(); renderDepartmentOptions(); toast("长期组别已保存");
+  } catch (error) { toast(error.message, "error"); }
+}
+
+async function openCreator(item = null) {
+  if (!isAdmin()) return;
+  if (!state.seasons.length) await loadSeasons();
+  $("creatorForm").reset(); $("creatorId").value = item?.id || "";
+  $("creatorSeason").innerHTML = state.seasons.map((season) => `<option value="${escapeHtml(season.id)}">${escapeHtml(season.name)}${season.is_open ? "" : "（已归档）"}</option>`).join("");
+  $("creatorSeason").value = item?.season_id || state.season?.id || state.seasons[0]?.id || "";
+  $("creatorName").value = item?.name || ""; $("creatorDepartment").value = item?.department || "";
+  $("creatorRole").value = item?.role_title || ""; $("creatorNote").value = item?.note || "";
+  $("creatorActive").checked = item ? Boolean(item.active) : true;
+  $("creatorDialogTitle").textContent = item ? "编辑创作者" : "添加创作者";
+  $("deleteCreatorBtn").classList.toggle("hidden", !item); $("creatorDialog").showModal();
+}
+
+async function saveCreator(event) {
+  event.preventDefault(); const id = $("creatorId").value;
+  const payload = { season_id: $("creatorSeason").value, name: $("creatorName").value, department: $("creatorDepartment").value, role_title: $("creatorRole").value, note: $("creatorNote").value, active: $("creatorActive").checked };
+  try {
+    await api(id ? `/api/admin/creators/${encodeURIComponent(id)}` : "/api/admin/creators", { method: id ? "PUT" : "POST", body: payload });
+    $("creatorDialog").close(); await refreshCurrentView(true); if (state.currentView === "creators") renderCreators(); toast("创作者名单已保存");
+  } catch (error) { toast(error.message, "error"); }
+}
+
+async function deleteCreator() {
+  const id = $("creatorId").value; if (!id) return;
+  if (!await confirmAction(`确认删除创作者“${$("creatorName").value}”的署名记录？`, { title: "删除创作者", confirmText: "确认删除", tone: "danger" })) return;
+  try { await api(`/api/admin/creators/${encodeURIComponent(id)}`, { method: "DELETE" }); $("creatorDialog").close(); await refreshCurrentView(true); renderCreators(); toast("创作者记录已删除"); }
   catch (error) { toast(error.message, "error"); }
 }
 
@@ -1459,6 +1590,17 @@ function setupEvents() {
   $("memberCards").addEventListener("click", (event) => { const edit = event.target.closest("[data-member-edit]"), archive = event.target.closest("[data-member-archive]"); if (edit) openMember(state.members.find((item) => item.id === edit.dataset.memberEdit)); if (archive) archiveMember(archive.dataset.memberArchive); });
   $("addUserBtn").addEventListener("click", () => openUser()); $("userForm").addEventListener("submit", saveUser);
   $("userTable").addEventListener("click", (event) => { const button = event.target.closest("[data-user-edit]"); if (button) openUser(state.users.find((item) => item.id === button.dataset.userEdit)); });
+  $("seasonBadgeBtn").addEventListener("click", openSeasonManager); $("openSeasonManagerBtn").addEventListener("click", openSeasonManager);
+  $("seasonCreateForm").addEventListener("submit", createSeason); $("departmentCreateForm").addEventListener("submit", createDepartment);
+  $("seasonManagerList").addEventListener("click", (event) => {
+    const switchButton = event.target.closest("[data-season-switch]"), renameButton = event.target.closest("[data-season-rename]"), toggleButton = event.target.closest("[data-season-toggle]");
+    if (switchButton) switchSeason(state.seasons.find((item) => item.id === switchButton.dataset.seasonSwitch));
+    if (renameButton) renameSeason(state.seasons.find((item) => item.id === renameButton.dataset.seasonRename));
+    if (toggleButton) toggleSeason(state.seasons.find((item) => item.id === toggleButton.dataset.seasonToggle));
+  });
+  $("addCreatorBtn").addEventListener("click", () => openCreator().catch((error) => toast(error.message, "error")));
+  $("creatorForm").addEventListener("submit", saveCreator); $("deleteCreatorBtn").addEventListener("click", deleteCreator);
+  $("creatorCards").addEventListener("click", (event) => { const button = event.target.closest("[data-creator-edit]"); if (button) openCreator(state.creators.find((item) => item.id === button.dataset.creatorEdit)).catch((error) => toast(error.message, "error")); });
   $("createSnapshotBtn").addEventListener("click", createSnapshotManually); $("snapshotList").addEventListener("click", (event) => { const button = event.target.closest("[data-snapshot-restore]"); if (button) restoreSnapshot(button.dataset.snapshotRestore); });
   $("openReferencesBtn").addEventListener("click", openReferences); $("categoryForm").addEventListener("submit", saveCategory); $("sourceForm").addEventListener("submit", saveSource);
   $("resetCategoryBtn").addEventListener("click", resetCategoryEditor); $("resetSourceBtn").addEventListener("click", resetSourceEditor);

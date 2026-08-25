@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import gzip
+import hashlib
 import json
 import sqlite3
 import threading
@@ -15,7 +16,15 @@ from .security import hash_password
 
 
 DB_LOCK = threading.RLock()
+DEFAULT_SEASON_ID = "season_2026"
+DEFAULT_SEASON_NAME = "2026赛季"
+DEFAULT_DEPARTMENTS = (
+    "电气部", "底盘部", "车身部", "市场部", "车架组", "悬架组", "电气组",
+    "动力组", "制动组", "空气动力组", "运营组", "整车组",
+)
 BUSINESS_TABLES = (
+    "departments",
+    "creators",
     "members",
     "categories",
     "funding_sources",
@@ -24,7 +33,15 @@ BUSINESS_TABLES = (
     "invoice_splits",
     "settlements",
 )
-SYNC_TABLES = BUSINESS_TABLES + ("users",)
+SEASON_BUSINESS_TABLES = (
+    "creators",
+    "members",
+    "attachments",
+    "invoices",
+    "invoice_splits",
+    "settlements",
+)
+SYNC_TABLES = BUSINESS_TABLES + ("users", "seasons")
 
 
 def utc_now() -> str:
@@ -83,8 +100,48 @@ CREATE TABLE IF NOT EXISTS meta (
   value TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS seasons (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL COLLATE NOCASE UNIQUE,
+  active INTEGER NOT NULL DEFAULT 1,
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  version INTEGER NOT NULL DEFAULT 1,
+  device_id TEXT NOT NULL,
+  deleted_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS departments (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL COLLATE NOCASE UNIQUE,
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  version INTEGER NOT NULL DEFAULT 1,
+  device_id TEXT NOT NULL,
+  deleted_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS creators (
+  id TEXT PRIMARY KEY,
+  season_id TEXT NOT NULL REFERENCES seasons(id),
+  name TEXT NOT NULL,
+  department TEXT NOT NULL DEFAULT '',
+  role_title TEXT NOT NULL DEFAULT '',
+  note TEXT NOT NULL DEFAULT '',
+  active INTEGER NOT NULL DEFAULT 1,
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  version INTEGER NOT NULL DEFAULT 1,
+  device_id TEXT NOT NULL,
+  deleted_at TEXT
+);
+
 CREATE TABLE IF NOT EXISTS members (
   id TEXT PRIMARY KEY,
+  season_id TEXT NOT NULL REFERENCES seasons(id),
   name TEXT NOT NULL,
   department TEXT NOT NULL DEFAULT '',
   student_id TEXT NOT NULL DEFAULT '',
@@ -145,6 +202,7 @@ CREATE TABLE IF NOT EXISTS funding_sources (
 
 CREATE TABLE IF NOT EXISTS attachments (
   id TEXT PRIMARY KEY,
+  season_id TEXT NOT NULL REFERENCES seasons(id),
   original_name TEXT NOT NULL,
   stored_name TEXT NOT NULL,
   mime_type TEXT NOT NULL DEFAULT 'application/octet-stream',
@@ -160,6 +218,7 @@ CREATE TABLE IF NOT EXISTS attachments (
 
 CREATE TABLE IF NOT EXISTS invoices (
   id TEXT PRIMARY KEY,
+  season_id TEXT NOT NULL REFERENCES seasons(id),
   invoice_no TEXT NOT NULL DEFAULT '',
   vendor TEXT NOT NULL DEFAULT '',
   invoice_date TEXT NOT NULL,
@@ -189,6 +248,7 @@ CREATE TABLE IF NOT EXISTS invoices (
 
 CREATE TABLE IF NOT EXISTS invoice_splits (
   id TEXT PRIMARY KEY,
+  season_id TEXT NOT NULL REFERENCES seasons(id),
   invoice_id TEXT NOT NULL REFERENCES invoices(id) ON DELETE CASCADE,
   member_id TEXT NOT NULL REFERENCES members(id) ON DELETE CASCADE,
   share_cents INTEGER NOT NULL CHECK(share_cents >= 0),
@@ -204,6 +264,7 @@ CREATE TABLE IF NOT EXISTS invoice_splits (
 
 CREATE TABLE IF NOT EXISTS settlements (
   id TEXT PRIMARY KEY,
+  season_id TEXT NOT NULL REFERENCES seasons(id),
   from_member_id TEXT NOT NULL REFERENCES members(id) ON DELETE CASCADE,
   to_member_id TEXT NOT NULL REFERENCES members(id) ON DELETE CASCADE,
   amount_cents INTEGER NOT NULL CHECK(amount_cents > 0),
@@ -221,6 +282,7 @@ CREATE TABLE IF NOT EXISTS settlements (
 
 CREATE TABLE IF NOT EXISTS audit_logs (
   id TEXT PRIMARY KEY,
+  season_id TEXT NOT NULL REFERENCES seasons(id),
   user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
   action TEXT NOT NULL,
   entity_type TEXT NOT NULL,
@@ -232,6 +294,7 @@ CREATE TABLE IF NOT EXISTS audit_logs (
 
 CREATE TABLE IF NOT EXISTS snapshots (
   id TEXT PRIMARY KEY,
+  season_id TEXT NOT NULL REFERENCES seasons(id),
   label TEXT NOT NULL,
   reason TEXT NOT NULL DEFAULT '',
   state_gzip BLOB NOT NULL,
@@ -341,11 +404,98 @@ def set_setting(conn: sqlite3.Connection, key: str, value: str, *, sync: bool = 
     if sync and key in {
         "team_name", "background_image", "background_media_id", "background_media_kind",
         "background_overlay", "accent_color", "login_slideshow_enabled", "login_slides",
-        "login_transition", "loading_cars", "classification_rules",
+        "login_transition", "loading_cars", "classification_rules", "current_season_id",
     }:
         enqueue_sync_event(conn, "app_settings", key, "upsert", {
             "key": key, "value": value, "updated_at": now, "version": version, "device_id": device_id
         })
+
+
+def current_season_id(conn: sqlite3.Connection) -> str:
+    configured = setting(conn, "current_season_id", DEFAULT_SEASON_ID).strip() or DEFAULT_SEASON_ID
+    if conn.execute("SELECT 1 FROM seasons WHERE id=? AND deleted_at IS NULL", (configured,)).fetchone():
+        return configured
+    fallback = conn.execute(
+        "SELECT id FROM seasons WHERE deleted_at IS NULL ORDER BY active DESC,sort_order DESC,created_at DESC LIMIT 1"
+    ).fetchone()
+    return str(fallback[0]) if fallback else DEFAULT_SEASON_ID
+
+
+def current_season(conn: sqlite3.Connection) -> dict[str, Any]:
+    season_id = current_season_id(conn)
+    row = conn.execute("SELECT * FROM seasons WHERE id=? AND deleted_at IS NULL", (season_id,)).fetchone()
+    if not row:
+        return {"id": DEFAULT_SEASON_ID, "name": DEFAULT_SEASON_NAME, "active": 1, "is_open": True}
+    item = dict(row)
+    item["is_open"] = bool(item["active"])
+    return item
+
+
+def _ensure_column(conn: sqlite3.Connection, table: str, column: str, definition: str) -> None:
+    columns = {str(row[1]) for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+    if column not in columns:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+
+
+def _department_id(name: str) -> str:
+    digest = hashlib.sha256(name.strip().encode("utf-8")).hexdigest()[:20]
+    return f"department_{digest}"
+
+
+def _migrate_season_schema(conn: sqlite3.Connection) -> None:
+    now = utc_now()
+    device_id = get_device_id(conn)
+    conn.execute(
+        """INSERT OR IGNORE INTO seasons(
+        id,name,active,sort_order,created_at,updated_at,version,device_id,deleted_at
+        ) VALUES(?,?,?,?,?,?,?,?,NULL)""",
+        (DEFAULT_SEASON_ID, DEFAULT_SEASON_NAME, 1, 2026, now, now, 1, device_id),
+    )
+    for table in ("members", "attachments", "invoices", "invoice_splits", "settlements", "audit_logs", "snapshots"):
+        _ensure_column(conn, table, "season_id", "TEXT REFERENCES seasons(id)")
+        conn.execute(f"UPDATE {table} SET season_id=? WHERE season_id IS NULL OR trim(season_id)=''", (DEFAULT_SEASON_ID,))
+
+    configured = setting(conn, "current_season_id", "").strip()
+    if not configured or not conn.execute(
+        "SELECT 1 FROM seasons WHERE id=? AND deleted_at IS NULL", (configured,)
+    ).fetchone():
+        set_setting(conn, "current_season_id", DEFAULT_SEASON_ID, sync=False)
+
+    department_names = set(DEFAULT_DEPARTMENTS)
+    department_names.update(
+        str(row[0]).strip() for row in conn.execute(
+            "SELECT DISTINCT department FROM members WHERE trim(department)<>''"
+        ).fetchall() if str(row[0]).strip()
+    )
+    for index, name in enumerate(sorted(department_names, key=lambda value: value.encode("utf-8"))):
+        conn.execute(
+            """INSERT OR IGNORE INTO departments(
+            id,name,sort_order,created_at,updated_at,version,device_id,deleted_at
+            ) VALUES(?,?,?,?,?,?,?,NULL)""",
+            (_department_id(name), name, index, now, now, 1, device_id),
+        )
+
+    conn.execute(
+        """INSERT OR IGNORE INTO creators(
+        id,season_id,name,department,role_title,note,active,sort_order,created_at,updated_at,version,device_id,deleted_at
+        ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,NULL)""",
+        (
+            "creator_2026_liu_songning", DEFAULT_SEASON_ID, "刘松宁", "电气部", "高压",
+            "燕翔车队经费管理系统创作者", 1, 0, now, now, 1, device_id,
+        ),
+    )
+    for statement in (
+        "CREATE INDEX IF NOT EXISTS idx_members_season ON members(season_id,active,sort_order) WHERE deleted_at IS NULL",
+        "CREATE INDEX IF NOT EXISTS idx_attachments_season ON attachments(season_id,created_at DESC) WHERE deleted_at IS NULL",
+        "CREATE INDEX IF NOT EXISTS idx_invoices_season_date ON invoices(season_id,invoice_date DESC) WHERE deleted_at IS NULL",
+        "CREATE INDEX IF NOT EXISTS idx_splits_season ON invoice_splits(season_id,invoice_id) WHERE deleted_at IS NULL",
+        "CREATE INDEX IF NOT EXISTS idx_settlements_season ON settlements(season_id,created_at DESC) WHERE deleted_at IS NULL",
+        "CREATE INDEX IF NOT EXISTS idx_creators_season ON creators(season_id,active,sort_order) WHERE deleted_at IS NULL",
+        "CREATE INDEX IF NOT EXISTS idx_audit_season ON audit_logs(season_id,created_at DESC)",
+        "CREATE INDEX IF NOT EXISTS idx_snapshots_season ON snapshots(season_id,created_at DESC)",
+    ):
+        conn.execute(statement)
+    conn.execute("INSERT OR REPLACE INTO meta(key,value) VALUES('schema_version','4')")
 
 
 def audit(
@@ -357,8 +507,13 @@ def audit(
     detail: dict[str, Any] | None = None,
 ) -> None:
     conn.execute(
-        "INSERT INTO audit_logs(id,user_id,action,entity_type,entity_id,detail_json,created_at,device_id) VALUES(?,?,?,?,?,?,?,?)",
-        (new_id("log"), user_id, action, entity_type, entity_id, json.dumps(detail or {}, ensure_ascii=False), utc_now(), get_device_id(conn)),
+        """INSERT INTO audit_logs(
+        id,season_id,user_id,action,entity_type,entity_id,detail_json,created_at,device_id
+        ) VALUES(?,?,?,?,?,?,?,?,?)""",
+        (
+            new_id("log"), current_season_id(conn), user_id, action, entity_type, entity_id,
+            json.dumps(detail or {}, ensure_ascii=False), utc_now(), get_device_id(conn),
+        ),
     )
 
 
@@ -395,20 +550,19 @@ def row_dict(conn: sqlite3.Connection, table: str, entity_id: str, id_column: st
 
 
 def snapshot_state(conn: sqlite3.Connection) -> dict[str, Any]:
-    state: dict[str, Any] = {"schema_version": 3, "captured_at": utc_now(), "tables": {}}
-    for table in BUSINESS_TABLES:
-        state["tables"][table] = [dict(row) for row in conn.execute(f"SELECT * FROM {table}").fetchall()]
-    allowed_settings = (
-        "team_name", "background_image", "background_media_id", "background_media_kind",
-        "background_overlay", "accent_color", "login_slideshow_enabled", "login_slides",
-        "login_transition", "loading_cars", "classification_rules",
-    )
-    placeholders = ",".join("?" for _ in allowed_settings)
-    state["tables"]["app_settings"] = [
-        dict(row) for row in conn.execute(
-            f"SELECT * FROM app_settings WHERE key IN ({placeholders})", allowed_settings
-        ).fetchall()
-    ]
+    season_id = current_season_id(conn)
+    state: dict[str, Any] = {
+        "schema_version": 5,
+        "season_id": season_id,
+        "captured_at": utc_now(),
+        "tables": {},
+    }
+    for table in SEASON_BUSINESS_TABLES:
+        state["tables"][table] = [
+            dict(row) for row in conn.execute(
+                f"SELECT * FROM {table} WHERE season_id=?", (season_id,)
+            ).fetchall()
+        ]
     return state
 
 
@@ -421,38 +575,52 @@ def create_snapshot(
     snapshot_id = new_id("snapshot")
     raw = json.dumps(snapshot_state(conn), ensure_ascii=False, separators=(",", ":")).encode("utf-8")
     conn.execute(
-        "INSERT INTO snapshots(id,label,reason,state_gzip,created_by,created_at,source_device_id) VALUES(?,?,?,?,?,?,?)",
-        (snapshot_id, label[:80], reason[:300], gzip.compress(raw, compresslevel=6), user_id, utc_now(), get_device_id(conn)),
+        """INSERT INTO snapshots(
+        id,season_id,label,reason,state_gzip,created_by,created_at,source_device_id
+        ) VALUES(?,?,?,?,?,?,?,?)""",
+        (
+            snapshot_id, current_season_id(conn), label[:80], reason[:300],
+            gzip.compress(raw, compresslevel=6), user_id, utc_now(), get_device_id(conn),
+        ),
     )
     conn.execute(
-        "DELETE FROM snapshots WHERE id IN (SELECT id FROM snapshots ORDER BY created_at DESC LIMIT -1 OFFSET 100)"
+        """DELETE FROM snapshots WHERE id IN (
+        SELECT id FROM snapshots WHERE season_id=? ORDER BY created_at DESC LIMIT -1 OFFSET 100
+        )""",
+        (current_season_id(conn),),
     )
     return snapshot_id
 
 
 def restore_snapshot(conn: sqlite3.Connection, snapshot_id: str, user_id: str) -> None:
-    row = conn.execute("SELECT * FROM snapshots WHERE id=?", (snapshot_id,)).fetchone()
+    row = conn.execute(
+        "SELECT * FROM snapshots WHERE id=? AND season_id=?", (snapshot_id, current_season_id(conn))
+    ).fetchone()
     if not row:
         raise ValueError("未找到该历史版本")
     create_snapshot(conn, user_id, "回溯前自动保护点", f"准备恢复到 {row['label']}")
     state = json.loads(gzip.decompress(row["state_gzip"]).decode("utf-8"))
     tables = state.get("tables", {})
-    memberships = {r["id"]: r["member_id"] for r in conn.execute("SELECT id,member_id FROM users").fetchall()}
+    restore_season_id = str(row["season_id"] or current_season_id(conn))
+    memberships = {
+        r["id"]: r["member_id"] for r in conn.execute(
+            """SELECT u.id,u.member_id FROM users u JOIN members m ON m.id=u.member_id
+            WHERE m.season_id=?""",
+            (restore_season_id,),
+        ).fetchall()
+    }
 
-    for table in ("invoice_splits", "settlements", "invoices", "attachments", "categories", "funding_sources", "members"):
-        conn.execute(f"DELETE FROM {table}")
-    restore_setting_keys = (
-        "team_name", "background_image", "background_media_id", "background_media_kind",
-        "background_overlay", "accent_color", "login_slideshow_enabled", "login_slides",
-        "login_transition", "loading_cars", "classification_rules",
-    )
-    conn.execute(
-        f"DELETE FROM app_settings WHERE key IN ({','.join('?' for _ in restore_setting_keys)})",
-        restore_setting_keys,
-    )
+    for table in (
+        "invoice_splits", "settlements", "invoices", "attachments", "creators",
+        "members",
+    ):
+        conn.execute(f"DELETE FROM {table} WHERE season_id=?", (restore_season_id,))
 
-    for table in ("members", "categories", "funding_sources", "attachments", "invoices", "invoice_splits", "settlements", "app_settings"):
+    for table in (
+        "members", "attachments", "invoices", "invoice_splits", "settlements", "creators",
+    ):
         for item in tables.get(table, []):
+            item = {**item, "season_id": restore_season_id}
             columns = list(item)
             placeholders = ",".join("?" for _ in columns)
             conn.execute(
@@ -460,7 +628,11 @@ def restore_snapshot(conn: sqlite3.Connection, snapshot_id: str, user_id: str) -
                 tuple(item[column] for column in columns),
             )
 
-    member_ids = {r[0] for r in conn.execute("SELECT id FROM members").fetchall()}
+    member_ids = {
+        r[0] for r in conn.execute(
+            "SELECT id FROM members WHERE season_id=?", (restore_season_id,)
+        ).fetchall()
+    }
     for user_id_value, member_id in memberships.items():
         conn.execute(
             "UPDATE users SET member_id=? WHERE id=?",
@@ -469,8 +641,10 @@ def restore_snapshot(conn: sqlite3.Connection, snapshot_id: str, user_id: str) -
 
     now = utc_now()
     device_id = get_device_id(conn)
-    for table in BUSINESS_TABLES:
-        for item in conn.execute(f"SELECT * FROM {table}").fetchall():
+    for table in SEASON_BUSINESS_TABLES:
+        for item in conn.execute(
+            f"SELECT * FROM {table} WHERE season_id=?", (restore_season_id,)
+        ).fetchall():
             payload = dict(item)
             payload["updated_at"] = now
             payload["device_id"] = device_id
@@ -501,7 +675,7 @@ def seed_defaults(conn: sqlite3.Connection) -> None:
     members = []
     for index in range(8):
         members.append({
-            "id": f"member_{index + 1:02d}", "name": f"成员{index + 1:02d}",
+            "id": f"member_{index + 1:02d}", "season_id": DEFAULT_SEASON_ID, "name": f"成员{index + 1:02d}",
             "department": departments[index], "student_id": "", "phone": "", "email": "",
             "avatar_color": colors[index], "active": 1, "sort_order": index,
             "created_at": now, "updated_at": now, "version": 1, "device_id": device_id, "deleted_at": None,
@@ -562,6 +736,7 @@ def seed_defaults(conn: sqlite3.Connection) -> None:
         "login_transition": "fade",
         "loading_cars": "[]",
         "classification_rules": "[]",
+        "current_season_id": DEFAULT_SEASON_ID,
         "sync_enabled": "0",
         "remote_url": "",
         "sync_shared_secret": "",
@@ -578,20 +753,20 @@ def seed_defaults(conn: sqlite3.Connection) -> None:
     for item in demo_invoices:
         invoice_id, invoice_date, amount, tax, category_id, product_type, payer_id, burden, status, reimbursed, reimb_date, source_id, note, vendor, invoice_no, member_numbers = item
         conn.execute(
-            """INSERT INTO invoices(id,invoice_no,vendor,invoice_date,total_amount_cents,tax_amount_cents,category_id,
+            """INSERT INTO invoices(id,season_id,invoice_no,vendor,invoice_date,total_amount_cents,tax_amount_cents,category_id,
             product_type,payer_member_id,burden_type,reimbursement_status,reimbursed_amount_cents,reimbursement_date,
             funding_source_id,note,attachment_id,ocr_text,ocr_confidence,ocr_status,is_demo,created_by,created_at,
-            updated_at,version,device_id,deleted_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,NULL)""",
-            (invoice_id, invoice_no, vendor, invoice_date, amount, tax, category_id, product_type, payer_id, burden,
+            updated_at,version,device_id,deleted_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,NULL)""",
+            (invoice_id, DEFAULT_SEASON_ID, invoice_no, vendor, invoice_date, amount, tax, category_id, product_type, payer_id, burden,
              status, reimbursed, reimb_date, source_id, note, None, "", 0, "manual", 1, "user_admin", now, now, 1, device_id),
         )
         quotient, remainder = divmod(amount, len(member_numbers))
         for position, member_number in enumerate(member_numbers):
             share = quotient + (1 if position < remainder else 0)
             conn.execute(
-                """INSERT INTO invoice_splits(id,invoice_id,member_id,share_cents,paid_cents,status,created_at,
-                updated_at,version,device_id,deleted_at) VALUES(?,?,?,?,?,?,?,?,?,?,NULL)""",
-                (new_id("split"), invoice_id, f"member_{member_number:02d}", share, 0, "pending", now, now, 1, device_id),
+                """INSERT INTO invoice_splits(id,season_id,invoice_id,member_id,share_cents,paid_cents,status,created_at,
+                updated_at,version,device_id,deleted_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,NULL)""",
+                (new_id("split"), DEFAULT_SEASON_ID, invoice_id, f"member_{member_number:02d}", share, 0, "pending", now, now, 1, device_id),
             )
     audit(conn, "user_admin", "seed", "system", None, {"demo_invoices": len(demo_invoices)})
     create_snapshot(conn, "user_admin", "V2.1 初始演示数据", "首次初始化")
@@ -603,11 +778,12 @@ def init_db() -> None:
         conn = connect()
         try:
             conn.executescript(SCHEMA)
+            conn.execute("BEGIN IMMEDIATE")
+            _migrate_season_schema(conn)
             ocr_columns = {row[1] for row in conn.execute("PRAGMA table_info(ocr_jobs)").fetchall()}
             if "invoice_id" not in ocr_columns:
                 conn.execute("ALTER TABLE ocr_jobs ADD COLUMN invoice_id TEXT REFERENCES invoices(id) ON DELETE SET NULL")
             conn.execute("PRAGMA optimize")
-            conn.execute("BEGIN IMMEDIATE")
             seed_defaults(conn)
             conn.commit()
         except Exception:

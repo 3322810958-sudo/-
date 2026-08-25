@@ -7,7 +7,7 @@ import uuid
 from copy import deepcopy
 from typing import Any
 
-from .database import setting
+from .database import current_season_id, setting
 
 
 PRODUCT_TYPES = [
@@ -142,9 +142,9 @@ def classify_invoice(
     if vendor_key:
         learned = conn.execute(
             """SELECT category_id,product_type,COUNT(*) AS uses
-            FROM invoices WHERE deleted_at IS NULL AND is_demo=0 AND trim(vendor)=? AND category_id IS NOT NULL
+            FROM invoices WHERE season_id=? AND deleted_at IS NULL AND is_demo=0 AND trim(vendor)=? AND category_id IS NOT NULL
             GROUP BY category_id,product_type ORDER BY uses DESC,MAX(updated_at) DESC LIMIT 1""",
-            (vendor_key,),
+            (current_season_id(conn), vendor_key),
         ).fetchone()
         if learned and learned["category_id"] in category_ids:
             candidates.append({

@@ -603,3 +603,54 @@ html[data-theme="light"] .race-stage > img { filter: drop-shadow(0 7px 9px rgba(
   .loading-car-editor { grid-template-columns: 1fr; }
   .update-current { align-items: flex-start; flex-direction: column; }
 }
+
+/* V2.2.1 season isolation and creator credits */
+button.season-badge { width: calc(100% - 36px); color: var(--text); cursor: pointer; text-align: left; }
+button.season-badge:hover { border-color: rgba(var(--accent-rgb),.48); background: rgba(var(--accent-rgb),.055); }
+button.season-badge.archived::before { background: var(--amber); }
+button.season-badge.archived i { background: repeating-linear-gradient(90deg,var(--amber) 0 4px,transparent 4px 7px); }
+.season-readonly-banner { display: flex; align-items: center; gap: 13px; min-height: 48px; margin-bottom: 14px; padding: 10px 14px; border: 1px solid rgba(255,176,32,.34); border-left: 4px solid var(--amber); border-radius: 7px; color: var(--muted); background: rgba(255,176,32,.07); font-size: 11px; }
+.season-readonly-banner b { color: var(--amber); font-size: 12px; }
+
+.creator-season-heading { margin-bottom: 14px; padding: 12px 15px; border: 1px solid rgba(var(--accent-rgb),.24); border-radius: 8px; color: var(--muted); background: rgba(var(--accent-rgb),.05); font-size: 11px; }
+.creator-season-heading b { margin-right: 8px; color: var(--accent); font-size: 13px; }
+.creator-cards { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 13px; }
+.creator-card { position: relative; min-height: 178px; padding: 21px; overflow: hidden; border: 1px solid var(--line); border-top: 3px solid var(--accent); border-radius: 10px; background: linear-gradient(145deg,var(--panel),var(--surface)); }
+.creator-card.inactive { opacity: .58; filter: grayscale(.35); }
+.creator-card::after { content: "★"; position: absolute; right: 10px; bottom: -22px; color: rgba(var(--accent-rgb),.055); font: 900 92px/1 Bahnschrift,sans-serif; }
+.creator-card .creator-meta { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 15px; }
+.creator-card .creator-meta span { padding: 5px 7px; border: 1px solid var(--line); border-radius: 4px; color: var(--muted); background: var(--surface-soft); font-size: 9px; }
+.creator-card h4 { margin: 0 0 8px; font-size: 20px; }
+.creator-card p { position: relative; z-index: 1; margin: 0; color: var(--muted); font-size: 10px; line-height: 1.7; }
+.creator-card footer { position: absolute; z-index: 2; right: 12px; top: 12px; }
+
+.season-manager-layout { display: grid; grid-template-columns: 1.2fr .8fr; gap: 14px; }
+.season-manager-pane { min-width: 0; padding: 15px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-soft); }
+.season-create-form { display: grid; grid-template-columns: minmax(0,1fr) auto; align-items: end; gap: 8px; margin-bottom: 12px; padding: 11px; border: 1px solid rgba(var(--accent-rgb),.15); background: rgba(var(--accent-rgb),.03); }
+.season-create-form label { display: grid; gap: 5px; color: var(--muted); font-size: 9px; }
+.season-create-form input { min-height: 36px; padding: 7px 9px; }
+.season-create-form .btn { min-height: 36px; }
+.season-manager-list { display: grid; gap: 7px; max-height: 410px; overflow: auto; padding-right: 3px; }
+.season-manager-item { display: grid; grid-template-columns: minmax(0,1fr) auto; align-items: center; gap: 10px; padding: 11px; border: 1px solid var(--line); border-radius: 7px; background: var(--item-bg); }
+.season-manager-item.current { border-color: rgba(var(--accent-rgb),.46); box-shadow: inset 3px 0 0 var(--accent); }
+.season-manager-item.archived { opacity: .68; }
+.season-manager-item h4 { margin: 0; font-size: 12px; }
+.season-manager-item p { margin: 5px 0 0; color: var(--muted); font-size: 9px; }
+.season-manager-item .season-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 5px; }
+.season-manager-item .btn { min-height: 30px; padding-inline: 8px; font-size: 8px; }
+.department-manager-list { display: flex; align-content: flex-start; flex-wrap: wrap; gap: 7px; max-height: 410px; overflow: auto; }
+.department-chip { padding: 7px 9px; border: 1px solid var(--line); border-radius: 999px; color: var(--muted); background: var(--item-bg); font-size: 9px; }
+#creatorForm > footer { display: grid; grid-template-columns: auto 1fr auto auto; }
+
+@media (max-width: 980px) {
+  .creator-cards { grid-template-columns: repeat(2,minmax(0,1fr)); }
+  .season-manager-layout { grid-template-columns: 1fr; }
+}
+@media (max-width: 560px) {
+  .season-readonly-banner { align-items: flex-start; flex-direction: column; gap: 4px; }
+  .creator-cards { grid-template-columns: 1fr; }
+  .season-create-form, .season-manager-item { grid-template-columns: 1fr; }
+  .season-manager-item .season-actions { justify-content: flex-start; }
+  #creatorForm > footer { grid-template-columns: 1fr 1fr; }
+  #creatorForm > footer > span { display: none; }
+}

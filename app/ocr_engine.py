@@ -13,7 +13,7 @@ from .attachments import attachment_path
 from .business import PRODUCT_TYPES, to_cents
 from .classification import classify_invoice, detect_product_type as smart_detect_product_type
 from .config import MODEL_DIR, OCR_CPU_THREADS, OCR_DETECTION_MAX_SIDE, OCR_WORKERS
-from .database import audit, enqueue_sync_event, fetch_one, get_device_id, new_id, transaction, utc_now
+from .database import audit, connect, current_season_id, enqueue_sync_event, get_device_id, new_id, transaction, utc_now
 
 
 OCR_EXECUTOR = ThreadPoolExecutor(max_workers=OCR_WORKERS, thread_name_prefix="yxrt-ocr")
@@ -235,7 +235,10 @@ def create_ocr_job(attachment_id: str, user_id: str, invoice_id: str | None = No
     job_id = new_id("ocrjob")
     now = utc_now()
     with transaction() as conn:
-        if not conn.execute("SELECT 1 FROM attachments WHERE id=? AND deleted_at IS NULL", (attachment_id,)).fetchone():
+        if not conn.execute(
+            "SELECT 1 FROM attachments WHERE id=? AND season_id=? AND deleted_at IS NULL",
+            (attachment_id, current_season_id(conn)),
+        ).fetchone():
             raise ValueError("附件不存在")
         conn.execute(
             "INSERT INTO ocr_jobs(id,attachment_id,invoice_id,status,result_json,error,created_by,created_at,updated_at) VALUES(?,?,?,?,'{}','',?,?,?)",
@@ -336,7 +339,13 @@ def _run_job(job_id: str) -> None:
 
 
 def get_ocr_job(job_id: str) -> dict[str, Any] | None:
-    job = fetch_one("SELECT * FROM ocr_jobs WHERE id=?", (job_id,))
+    with connect() as conn:
+        row = conn.execute(
+            """SELECT j.* FROM ocr_jobs j JOIN attachments a ON a.id=j.attachment_id
+            WHERE j.id=? AND a.season_id=? AND a.deleted_at IS NULL""",
+            (job_id, current_season_id(conn)),
+        ).fetchone()
+        job = dict(row) if row else None
     if not job:
         return None
     try:

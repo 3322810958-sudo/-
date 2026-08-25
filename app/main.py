@@ -67,6 +67,8 @@ from .database import (
     audit,
     connect,
     create_snapshot,
+    current_season,
+    current_season_id,
     enqueue_sync_event,
     fetch_all,
     get_device_id,
@@ -379,8 +381,10 @@ async def auth_change_credentials(payload: dict[str, Any], request: Request) -> 
 
 
 def _reference_data(conn: sqlite3.Connection) -> dict[str, Any]:
+    season = current_season(conn)
     members = [dict(row) for row in conn.execute(
-        "SELECT * FROM members WHERE deleted_at IS NULL ORDER BY active DESC,sort_order,name"
+        """SELECT * FROM members WHERE season_id=? AND deleted_at IS NULL
+        ORDER BY active DESC,sort_order,name""", (season["id"],)
     ).fetchall()]
     categories = [dict(row) for row in conn.execute(
         "SELECT * FROM categories WHERE deleted_at IS NULL ORDER BY active DESC,sort_order,name"
@@ -388,8 +392,19 @@ def _reference_data(conn: sqlite3.Connection) -> dict[str, Any]:
     sources = [dict(row) for row in conn.execute(
         "SELECT * FROM funding_sources WHERE deleted_at IS NULL ORDER BY active DESC,sort_order,name"
     ).fetchall()]
+    departments = [dict(row) for row in conn.execute(
+        "SELECT * FROM departments WHERE deleted_at IS NULL ORDER BY sort_order,name"
+    ).fetchall()]
+    creators = [dict(row) for row in conn.execute(
+        """SELECT c.*,s.name AS season_name FROM creators c JOIN seasons s ON s.id=c.season_id
+        WHERE c.season_id=? AND c.active=1 AND c.deleted_at IS NULL
+        ORDER BY c.sort_order,c.department,c.name""", (season["id"],)
+    ).fetchall()]
     settings = _appearance_settings(conn)
-    return {"members": members, "categories": categories, "funding_sources": sources, "settings": settings}
+    return {
+        "members": members, "categories": categories, "funding_sources": sources,
+        "departments": departments, "creators": creators, "season": season, "settings": settings,
+    }
 
 
 @app.get("/api/bootstrap")
@@ -414,6 +429,318 @@ async def dashboard_endpoint(request: Request) -> dict[str, Any]:
     get_auth(request)
     with connect() as conn:
         return dashboard(conn)
+
+
+def _season_items(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+    selected_id = current_season_id(conn)
+    rows = [dict(row) for row in conn.execute(
+        """SELECT s.*,
+        (SELECT COUNT(*) FROM members m WHERE m.season_id=s.id AND m.deleted_at IS NULL) AS member_count,
+        (SELECT COUNT(*) FROM invoices i WHERE i.season_id=s.id AND i.deleted_at IS NULL) AS invoice_count,
+        (SELECT COUNT(*) FROM creators c WHERE c.season_id=s.id AND c.active=1 AND c.deleted_at IS NULL) AS creator_count
+        FROM seasons s WHERE s.deleted_at IS NULL ORDER BY s.sort_order DESC,s.created_at DESC"""
+    ).fetchall()]
+    for item in rows:
+        item["is_current"] = item["id"] == selected_id
+        item["is_open"] = bool(item["active"])
+    return rows
+
+
+@app.get("/api/seasons")
+async def seasons_list(request: Request) -> dict[str, Any]:
+    auth = get_auth(request)
+    with connect() as conn:
+        items = _season_items(conn)
+        if auth.user["role"] != "admin":
+            items = [item for item in items if item["is_current"]]
+    return {"items": items}
+
+
+@app.post("/api/admin/seasons")
+async def seasons_create(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    auth = get_auth(request)
+    require_csrf(request, auth)
+    require_admin(auth)
+    name = str(payload.get("name") or "").strip()
+    if len(name) < 2 or len(name) > 40:
+        raise HTTPException(status_code=400, detail="赛季名称需为 2 至 40 个字符")
+    with transaction() as conn:
+        if conn.execute(
+            "SELECT 1 FROM seasons WHERE name=? COLLATE NOCASE AND deleted_at IS NULL", (name,)
+        ).fetchone():
+            raise HTTPException(status_code=409, detail="该赛季已经存在")
+        create_snapshot(conn, auth.user["id"], "新增赛季前", name)
+        now = utc_now()
+        row = {
+            "id": new_id("season"), "name": name, "active": 1,
+            "sort_order": int(conn.execute("SELECT COALESCE(MAX(sort_order),0)+1 FROM seasons").fetchone()[0]),
+            "created_at": now, "updated_at": now, "version": 1,
+            "device_id": get_device_id(conn), "deleted_at": None,
+        }
+        columns = list(row)
+        conn.execute(
+            f"INSERT INTO seasons({','.join(columns)}) VALUES({','.join('?' for _ in columns)})",
+            tuple(row[column] for column in columns),
+        )
+        enqueue_sync_event(conn, "seasons", row["id"], "upsert", row)
+        audit(conn, auth.user["id"], "create", "season", row["id"], {"name": name})
+    await hub.notify("season_list_changed")
+    return row
+
+
+@app.put("/api/admin/seasons/{season_id}")
+async def seasons_update(season_id: str, payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    auth = get_auth(request)
+    require_csrf(request, auth)
+    require_admin(auth)
+    with transaction() as conn:
+        current_row = conn.execute(
+            "SELECT * FROM seasons WHERE id=? AND deleted_at IS NULL", (season_id,)
+        ).fetchone()
+        if not current_row:
+            raise HTTPException(status_code=404, detail="赛季不存在")
+        item = dict(current_row)
+        name = str(payload.get("name", item["name"]) or "").strip()
+        if len(name) < 2 or len(name) > 40:
+            raise HTTPException(status_code=400, detail="赛季名称需为 2 至 40 个字符")
+        if conn.execute(
+            "SELECT 1 FROM seasons WHERE name=? COLLATE NOCASE AND id<>? AND deleted_at IS NULL",
+            (name, season_id),
+        ).fetchone():
+            raise HTTPException(status_code=409, detail="该赛季名称已经存在")
+        active = int(bool(payload.get("active", item["active"])))
+        if season_id == current_season_id(conn) and not active:
+            raise HTTPException(status_code=400, detail="请先切换到其他赛季，再归档当前赛季")
+        create_snapshot(conn, auth.user["id"], "修改赛季前", item["name"])
+        item.update({
+            "name": name, "active": active, "updated_at": utc_now(),
+            "version": int(item["version"]) + 1, "device_id": get_device_id(conn),
+        })
+        columns = [key for key in item if key != "id"]
+        conn.execute(
+            f"UPDATE seasons SET {','.join(f'{key}=?' for key in columns)} WHERE id=?",
+            tuple(item[key] for key in columns) + (season_id,),
+        )
+        enqueue_sync_event(conn, "seasons", season_id, "upsert", item)
+        audit(conn, auth.user["id"], "update", "season", season_id, {"name": name, "active": bool(active)})
+    await hub.notify("season_list_changed")
+    return item
+
+
+@app.post("/api/admin/seasons/{season_id}/switch")
+async def seasons_switch(season_id: str, request: Request) -> dict[str, Any]:
+    auth = get_auth(request)
+    require_csrf(request, auth)
+    require_admin(auth)
+    with transaction() as conn:
+        target = conn.execute(
+            "SELECT * FROM seasons WHERE id=? AND deleted_at IS NULL", (season_id,)
+        ).fetchone()
+        if not target:
+            raise HTTPException(status_code=404, detail="赛季不存在")
+        previous = current_season(conn)
+        if previous["id"] != season_id:
+            create_snapshot(conn, auth.user["id"], "切换赛季前", f"{previous['name']} → {target['name']}")
+            set_setting(conn, "current_season_id", season_id)
+            conn.execute(
+                """DELETE FROM sessions WHERE user_id IN (
+                SELECT u.id FROM users u LEFT JOIN members m ON m.id=u.member_id
+                WHERE u.role='member' AND (m.season_id IS NULL OR m.season_id<>?)
+                )""",
+                (season_id,),
+            )
+            audit(conn, auth.user["id"], "switch", "season", season_id, {
+                "from": previous["name"], "to": target["name"], "read_only": not bool(target["active"]),
+            })
+        item = dict(target)
+        item["is_current"] = True
+        item["is_open"] = bool(item["active"])
+    await hub.notify("season_changed")
+    return item
+
+
+def _ensure_department(conn: sqlite3.Connection, name: str) -> dict[str, Any] | None:
+    clean = str(name or "").strip()[:80]
+    if not clean:
+        return None
+    existing = conn.execute(
+        "SELECT * FROM departments WHERE name=? COLLATE NOCASE AND deleted_at IS NULL", (clean,)
+    ).fetchone()
+    if existing:
+        return dict(existing)
+    now = utc_now()
+    row = {
+        "id": new_id("department"), "name": clean,
+        "sort_order": int(conn.execute("SELECT COALESCE(MAX(sort_order),-1)+1 FROM departments").fetchone()[0]),
+        "created_at": now, "updated_at": now, "version": 1,
+        "device_id": get_device_id(conn), "deleted_at": None,
+    }
+    columns = list(row)
+    conn.execute(
+        f"INSERT INTO departments({','.join(columns)}) VALUES({','.join('?' for _ in columns)})",
+        tuple(row[column] for column in columns),
+    )
+    enqueue_sync_event(conn, "departments", row["id"], "upsert", row)
+    return row
+
+
+@app.post("/api/admin/departments")
+async def departments_create(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    auth = get_auth(request)
+    require_csrf(request, auth)
+    require_admin(auth)
+    name = str(payload.get("name") or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="组别名称不能为空")
+    with transaction() as conn:
+        existing = conn.execute(
+            "SELECT * FROM departments WHERE name=? COLLATE NOCASE AND deleted_at IS NULL", (name,)
+        ).fetchone()
+        if existing:
+            return dict(existing)
+        item = _ensure_department(conn, name)
+        audit(conn, auth.user["id"], "create", "department", item["id"] if item else None, {"name": name})
+    await hub.notify("department_changed")
+    return item or {}
+
+
+def _creator_payload(conn: sqlite3.Connection, creator_id: str) -> dict[str, Any] | None:
+    row = conn.execute(
+        """SELECT c.*,s.name AS season_name FROM creators c JOIN seasons s ON s.id=c.season_id
+        WHERE c.id=? AND c.deleted_at IS NULL""", (creator_id,)
+    ).fetchone()
+    return dict(row) if row else None
+
+
+@app.get("/api/creators")
+async def creators_list(request: Request) -> dict[str, Any]:
+    auth = get_auth(request)
+    with connect() as conn:
+        season_id = current_season_id(conn)
+        active_clause = "" if auth.user["role"] == "admin" else "AND c.active=1"
+        items = [dict(row) for row in conn.execute(
+            f"""SELECT c.*,s.name AS season_name FROM creators c JOIN seasons s ON s.id=c.season_id
+            WHERE c.season_id=? {active_clause} AND c.deleted_at IS NULL
+            ORDER BY c.active DESC,c.sort_order,c.department,c.name""", (season_id,)
+        ).fetchall()]
+    return {"items": items}
+
+
+@app.get("/api/public/creators")
+async def creators_public() -> dict[str, Any]:
+    with connect() as conn:
+        season = current_season(conn)
+        items = [dict(row) for row in conn.execute(
+            """SELECT c.name,c.department,c.role_title,c.note,c.sort_order,s.name AS season_name
+            FROM creators c JOIN seasons s ON s.id=c.season_id
+            WHERE c.season_id=? AND c.active=1 AND c.deleted_at IS NULL
+            ORDER BY c.sort_order,c.department,c.name""", (season["id"],)
+        ).fetchall()]
+    return {"season": season["name"], "items": items}
+
+
+@app.post("/api/admin/creators")
+async def creators_create(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    auth = get_auth(request)
+    require_csrf(request, auth)
+    require_admin(auth)
+    name = str(payload.get("name") or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="创作者姓名不能为空")
+    with transaction() as conn:
+        season_id = str(payload.get("season_id") or current_season_id(conn))
+        if not conn.execute("SELECT 1 FROM seasons WHERE id=? AND deleted_at IS NULL", (season_id,)).fetchone():
+            raise HTTPException(status_code=400, detail="所选赛季不存在")
+        department = str(payload.get("department") or "").strip()[:80]
+        _ensure_department(conn, department)
+        now = utc_now()
+        row = {
+            "id": new_id("creator"), "season_id": season_id, "name": name[:80],
+            "department": department, "role_title": str(payload.get("role_title") or "").strip()[:80],
+            "note": str(payload.get("note") or "").strip()[:500],
+            "active": int(bool(payload.get("active", True))),
+            "sort_order": int(conn.execute(
+                "SELECT COALESCE(MAX(sort_order),-1)+1 FROM creators WHERE season_id=?", (season_id,)
+            ).fetchone()[0]),
+            "created_at": now, "updated_at": now, "version": 1,
+            "device_id": get_device_id(conn), "deleted_at": None,
+        }
+        columns = list(row)
+        conn.execute(
+            f"INSERT INTO creators({','.join(columns)}) VALUES({','.join('?' for _ in columns)})",
+            tuple(row[column] for column in columns),
+        )
+        enqueue_sync_event(conn, "creators", row["id"], "upsert", row)
+        audit(conn, auth.user["id"], "create", "creator", row["id"], {"name": name})
+        item = _creator_payload(conn, row["id"])
+    await hub.notify("creator_changed")
+    return item or row
+
+
+@app.put("/api/admin/creators/{creator_id}")
+async def creators_update(creator_id: str, payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    auth = get_auth(request)
+    require_csrf(request, auth)
+    require_admin(auth)
+    with transaction() as conn:
+        current_row = conn.execute(
+            "SELECT * FROM creators WHERE id=? AND deleted_at IS NULL", (creator_id,)
+        ).fetchone()
+        if not current_row:
+            raise HTTPException(status_code=404, detail="创作者记录不存在")
+        item = dict(current_row)
+        name = str(payload.get("name", item["name"]) or "").strip()
+        if not name:
+            raise HTTPException(status_code=400, detail="创作者姓名不能为空")
+        season_id = str(payload.get("season_id") or item["season_id"])
+        if not conn.execute("SELECT 1 FROM seasons WHERE id=? AND deleted_at IS NULL", (season_id,)).fetchone():
+            raise HTTPException(status_code=400, detail="所选赛季不存在")
+        department = str(payload.get("department", item["department"]) or "").strip()[:80]
+        _ensure_department(conn, department)
+        item.update({
+            "season_id": season_id, "name": name[:80], "department": department,
+            "role_title": str(payload.get("role_title", item["role_title"]) or "").strip()[:80],
+            "note": str(payload.get("note", item["note"]) or "").strip()[:500],
+            "active": int(bool(payload.get("active", item["active"]))),
+            "sort_order": int(payload.get("sort_order", item["sort_order"])),
+            "updated_at": utc_now(), "version": int(item["version"]) + 1, "device_id": get_device_id(conn),
+        })
+        columns = [key for key in item if key != "id"]
+        conn.execute(
+            f"UPDATE creators SET {','.join(f'{key}=?' for key in columns)} WHERE id=?",
+            tuple(item[key] for key in columns) + (creator_id,),
+        )
+        enqueue_sync_event(conn, "creators", creator_id, "upsert", item)
+        audit(conn, auth.user["id"], "update", "creator", creator_id, {"name": name})
+        result = _creator_payload(conn, creator_id)
+    await hub.notify("creator_changed")
+    return result or item
+
+
+@app.delete("/api/admin/creators/{creator_id}")
+async def creators_delete(creator_id: str, request: Request) -> dict[str, bool]:
+    auth = get_auth(request)
+    require_csrf(request, auth)
+    require_admin(auth)
+    with transaction() as conn:
+        current_row = conn.execute(
+            "SELECT * FROM creators WHERE id=? AND deleted_at IS NULL", (creator_id,)
+        ).fetchone()
+        if not current_row:
+            raise HTTPException(status_code=404, detail="创作者记录不存在")
+        item = dict(current_row)
+        item.update({
+            "deleted_at": utc_now(), "updated_at": utc_now(),
+            "version": int(item["version"]) + 1, "device_id": get_device_id(conn),
+        })
+        conn.execute(
+            "UPDATE creators SET deleted_at=?,updated_at=?,version=?,device_id=? WHERE id=?",
+            (item["deleted_at"], item["updated_at"], item["version"], item["device_id"], creator_id),
+        )
+        enqueue_sync_event(conn, "creators", creator_id, "delete", item)
+        audit(conn, auth.user["id"], "delete", "creator", creator_id, {"name": item["name"]})
+    await hub.notify("creator_changed")
+    return {"ok": True}
 
 
 @app.get("/api/invoices")
@@ -490,11 +817,14 @@ async def invoices_batch_action(payload: dict[str, Any], request: Request) -> di
 async def settlements_summary(request: Request) -> dict[str, Any]:
     get_auth(request)
     with connect() as conn:
+        season_id = current_season_id(conn)
         result = settlement_summary(conn)
         result["history"] = [dict(row) for row in conn.execute(
             """SELECT s.*,fm.name AS from_name,tm.name AS to_name,u.display_name AS created_by_name
             FROM settlements s JOIN members fm ON fm.id=s.from_member_id JOIN members tm ON tm.id=s.to_member_id
-            LEFT JOIN users u ON u.id=s.created_by WHERE s.deleted_at IS NULL ORDER BY s.created_at DESC LIMIT 200"""
+            LEFT JOIN users u ON u.id=s.created_by
+            WHERE s.season_id=? AND s.deleted_at IS NULL ORDER BY s.created_at DESC LIMIT 200""",
+            (season_id,),
         ).fetchall()]
         for item in result["history"]:
             item["amount"] = yuan(item.pop("amount_cents"))
@@ -517,7 +847,10 @@ async def settlements_delete(settlement_id: str, request: Request) -> dict[str, 
     require_csrf(request, auth)
     require_write(auth)
     with transaction() as conn:
-        row = conn.execute("SELECT * FROM settlements WHERE id=? AND deleted_at IS NULL", (settlement_id,)).fetchone()
+        season_id = current_season_id(conn)
+        row = conn.execute(
+            "SELECT * FROM settlements WHERE id=? AND season_id=? AND deleted_at IS NULL", (settlement_id, season_id)
+        ).fetchone()
         if not row:
             raise HTTPException(status_code=404, detail="未找到该结算记录")
         create_snapshot(conn, auth.user["id"], "删除结算记录前", "成员AA结算")
@@ -536,11 +869,14 @@ async def users_list(request: Request) -> dict[str, Any]:
     auth = get_auth(request)
     require_admin(auth)
     with connect() as conn:
+        season_id = current_season_id(conn)
         items = [dict(row) for row in conn.execute(
             """SELECT u.id,u.member_id,u.username,u.display_name,u.role,u.active,u.must_change_password,
             u.created_at,u.updated_at,u.version,m.name AS member_name,m.department
             FROM users u LEFT JOIN members m ON m.id=u.member_id
-            WHERE u.deleted_at IS NULL ORDER BY CASE u.role WHEN 'admin' THEN 0 WHEN 'member' THEN 1 ELSE 2 END,u.username"""
+            WHERE u.deleted_at IS NULL AND (u.role<>'member' OR m.season_id=?)
+            ORDER BY CASE u.role WHEN 'admin' THEN 0 WHEN 'member' THEN 1 ELSE 2 END,u.username""",
+            (season_id,),
         ).fetchall()]
     return {"items": items}
 
@@ -550,6 +886,7 @@ async def users_create(payload: dict[str, Any], request: Request) -> dict[str, A
     auth = get_auth(request)
     require_csrf(request, auth)
     require_admin(auth)
+    require_write(auth)
     try:
         username = validate_username(str(payload.get("username") or ""))
         password = str(payload.get("password") or "Member@2026")
@@ -560,11 +897,18 @@ async def users_create(payload: dict[str, Any], request: Request) -> dict[str, A
     if role not in {"admin", "member", "viewer"}:
         raise HTTPException(status_code=400, detail="账号角色不正确")
     with transaction() as conn:
+        season_id = current_season_id(conn)
         if conn.execute("SELECT 1 FROM users WHERE username=? COLLATE NOCASE AND deleted_at IS NULL", (username,)).fetchone():
             raise HTTPException(status_code=409, detail="该账号已存在")
         member_id = str(payload.get("member_id") or "") or None
-        if member_id and not conn.execute("SELECT 1 FROM members WHERE id=? AND deleted_at IS NULL", (member_id,)).fetchone():
+        if role == "member" and not member_id:
+            raise HTTPException(status_code=400, detail="成员账号必须关联当前赛季成员")
+        if member_id and not conn.execute(
+            "SELECT 1 FROM members WHERE id=? AND season_id=? AND deleted_at IS NULL", (member_id, season_id)
+        ).fetchone():
             raise HTTPException(status_code=400, detail="关联成员不存在")
+        if role in {"admin", "viewer"}:
+            member_id = None
         now = utc_now()
         row = {
             "id": new_id("user"), "member_id": member_id, "username": username,
@@ -586,8 +930,14 @@ async def users_update(user_id: str, payload: dict[str, Any], request: Request) 
     auth = get_auth(request)
     require_csrf(request, auth)
     require_admin(auth)
+    require_write(auth)
     with transaction() as conn:
-        current_row = conn.execute("SELECT * FROM users WHERE id=? AND deleted_at IS NULL", (user_id,)).fetchone()
+        season_id = current_season_id(conn)
+        current_row = conn.execute(
+            """SELECT u.* FROM users u LEFT JOIN members m ON m.id=u.member_id
+            WHERE u.id=? AND u.deleted_at IS NULL AND (u.role<>'member' OR m.season_id=?)""",
+            (user_id, season_id),
+        ).fetchone()
         if not current_row:
             raise HTTPException(status_code=404, detail="账号不存在")
         current = dict(current_row)
@@ -603,6 +953,14 @@ async def users_update(user_id: str, payload: dict[str, Any], request: Request) 
         if user_id == auth.user["id"] and (role != "admin" or not bool(payload.get("active", True))):
             raise HTTPException(status_code=400, detail="管理员不能停用或降低自己的权限")
         member_id = str(payload.get("member_id") or "") or None
+        if role == "member" and not member_id:
+            raise HTTPException(status_code=400, detail="成员账号必须关联当前赛季成员")
+        if member_id and not conn.execute(
+            "SELECT 1 FROM members WHERE id=? AND season_id=? AND deleted_at IS NULL", (member_id, season_id)
+        ).fetchone():
+            raise HTTPException(status_code=400, detail="关联成员不存在")
+        if role in {"admin", "viewer"}:
+            member_id = None
         now = utc_now()
         current.update({
             "member_id": member_id, "username": username,
@@ -631,17 +989,24 @@ async def members_create(payload: dict[str, Any], request: Request) -> dict[str,
     auth = get_auth(request)
     require_csrf(request, auth)
     require_admin(auth)
+    require_write(auth)
     name = str(payload.get("name") or "").strip()
     if not name:
         raise HTTPException(status_code=400, detail="成员姓名不能为空")
     with transaction() as conn:
+        season_id = current_season_id(conn)
         create_snapshot(conn, auth.user["id"], "新增成员前", name)
         now = utc_now()
+        department = str(payload.get("department") or "").strip()[:80]
+        _ensure_department(conn, department)
         row = {
-            "id": new_id("member"), "name": name[:60], "department": str(payload.get("department") or "")[:80],
+            "id": new_id("member"), "season_id": season_id,
+            "name": name[:60], "department": department,
             "student_id": str(payload.get("student_id") or "")[:40], "phone": str(payload.get("phone") or "")[:30],
             "email": str(payload.get("email") or "")[:120], "avatar_color": str(payload.get("avatar_color") or "#27d3ff")[:20],
-            "active": 1, "sort_order": int(conn.execute("SELECT COALESCE(MAX(sort_order),-1)+1 FROM members").fetchone()[0]),
+            "active": 1, "sort_order": int(conn.execute(
+                "SELECT COALESCE(MAX(sort_order),-1)+1 FROM members WHERE season_id=?", (season_id,)
+            ).fetchone()[0]),
             "created_at": now, "updated_at": now, "version": 1, "device_id": get_device_id(conn), "deleted_at": None,
         }
         columns = list(row)
@@ -658,8 +1023,12 @@ async def members_update(member_id: str, payload: dict[str, Any], request: Reque
     auth = get_auth(request)
     require_csrf(request, auth)
     require_admin(auth)
+    require_write(auth)
     with transaction() as conn:
-        row = conn.execute("SELECT * FROM members WHERE id=? AND deleted_at IS NULL", (member_id,)).fetchone()
+        season_id = current_season_id(conn)
+        row = conn.execute(
+            "SELECT * FROM members WHERE id=? AND season_id=? AND deleted_at IS NULL", (member_id, season_id)
+        ).fetchone()
         if not row:
             raise HTTPException(status_code=404, detail="成员不存在")
         item = dict(row)
@@ -667,8 +1036,10 @@ async def members_update(member_id: str, payload: dict[str, Any], request: Reque
         if not name:
             raise HTTPException(status_code=400, detail="成员姓名不能为空")
         create_snapshot(conn, auth.user["id"], "修改成员前", item["name"])
+        department = str(payload.get("department", item["department"]) or "").strip()[:80]
+        _ensure_department(conn, department)
         item.update({
-            "name": name[:60], "department": str(payload.get("department", item["department"]))[:80],
+            "name": name[:60], "department": department,
             "student_id": str(payload.get("student_id", item["student_id"]))[:40],
             "phone": str(payload.get("phone", item["phone"]))[:30], "email": str(payload.get("email", item["email"]))[:120],
             "avatar_color": str(payload.get("avatar_color", item["avatar_color"]))[:20],
@@ -693,11 +1064,17 @@ async def members_archive(member_id: str, request: Request) -> dict[str, bool]:
     auth = get_auth(request)
     require_csrf(request, auth)
     require_admin(auth)
+    require_write(auth)
     with transaction() as conn:
-        row = conn.execute("SELECT * FROM members WHERE id=? AND deleted_at IS NULL", (member_id,)).fetchone()
+        season_id = current_season_id(conn)
+        row = conn.execute(
+            "SELECT * FROM members WHERE id=? AND season_id=? AND deleted_at IS NULL", (member_id, season_id)
+        ).fetchone()
         if not row:
             raise HTTPException(status_code=404, detail="成员不存在")
-        if conn.execute("SELECT COUNT(*) FROM members WHERE active=1 AND deleted_at IS NULL").fetchone()[0] <= 1:
+        if conn.execute(
+            "SELECT COUNT(*) FROM members WHERE season_id=? AND active=1 AND deleted_at IS NULL", (season_id,)
+        ).fetchone()[0] <= 1:
             raise HTTPException(status_code=400, detail="至少需要保留一名有效成员")
         create_snapshot(conn, auth.user["id"], "停用成员前", row["name"])
         item = dict(row)
@@ -787,6 +1164,8 @@ async def attachment_content(attachment_id: str, request: Request) -> FileRespon
     get_auth(request)
     with connect() as conn:
         row = conn.execute("SELECT * FROM attachments WHERE id=? AND deleted_at IS NULL", (attachment_id,)).fetchone()
+        if row and row["season_id"] != current_season_id(conn) and attachment_id not in _configured_public_media_ids(conn):
+            row = None
     if not row:
         raise HTTPException(status_code=404, detail="附件不存在")
     path = attachment_path(row["stored_name"])
@@ -802,8 +1181,10 @@ def _create_import_drafts(
 ) -> list[dict[str, Any]]:
     drafts: list[dict[str, Any]] = []
     with transaction() as conn:
+        season_id = current_season_id(conn)
         active_ids = [row[0] for row in conn.execute(
-            "SELECT id FROM members WHERE active=1 AND deleted_at IS NULL ORDER BY sort_order,name"
+            """SELECT id FROM members WHERE season_id=? AND active=1 AND deleted_at IS NULL
+            ORDER BY sort_order,name""", (season_id,)
         ).fetchall()]
         if not active_ids:
             raise BusinessError("没有可用成员")
@@ -819,9 +1200,12 @@ def _create_import_drafts(
         now = utc_now()
         device_id = get_device_id(conn)
         for attachment in attachments:
+            if attachment.get("season_id") != season_id:
+                raise BusinessError("导入附件不属于当前赛季")
             invoice_id = new_id("invoice")
             row = {
-                "id": invoice_id, "invoice_no": "", "vendor": "待 OCR 识别", "invoice_date": now[:10],
+                "id": invoice_id, "season_id": season_id,
+                "invoice_no": "", "vendor": "待 OCR 识别", "invoice_date": now[:10],
                 "total_amount_cents": 0, "tax_amount_cents": 0, "category_id": category_id,
                 "product_type": "其他", "payer_member_id": payer_member_id, "burden_type": burden_type,
                 "reimbursement_status": "pending", "reimbursed_amount_cents": 0, "reimbursement_date": None,
@@ -835,7 +1219,8 @@ def _create_import_drafts(
                          tuple(row[column] for column in columns))
             enqueue_sync_event(conn, "invoices", invoice_id, "upsert", row)
             for member_id in selected:
-                split = {"id": new_id("split"), "invoice_id": invoice_id, "member_id": member_id, "share_cents": 0,
+                split = {"id": new_id("split"), "season_id": season_id,
+                         "invoice_id": invoice_id, "member_id": member_id, "share_cents": 0,
                          "paid_cents": 0, "status": "pending", "created_at": now, "updated_at": now,
                          "version": 1, "device_id": device_id, "deleted_at": None}
                 split_columns = list(split)
@@ -982,9 +1367,10 @@ async def audit_logs(request: Request, limit: int = Query(200, ge=1, le=1000)) -
     auth = get_auth(request)
     require_admin(auth)
     with connect() as conn:
+        season_id = current_season_id(conn)
         items = [dict(row) for row in conn.execute(
             """SELECT l.*,u.display_name AS user_name FROM audit_logs l LEFT JOIN users u ON u.id=l.user_id
-            ORDER BY l.created_at DESC LIMIT ?""", (limit,)
+            WHERE l.season_id=? ORDER BY l.created_at DESC LIMIT ?""", (season_id, limit)
         ).fetchall()]
     for item in items:
         try:
@@ -999,10 +1385,11 @@ async def snapshots_list(request: Request) -> dict[str, Any]:
     auth = get_auth(request)
     require_admin(auth)
     with connect() as conn:
+        season_id = current_season_id(conn)
         items = [dict(row) for row in conn.execute(
             """SELECT s.id,s.label,s.reason,s.created_at,s.source_device_id,u.display_name AS created_by_name,
             length(s.state_gzip) AS size_bytes FROM snapshots s LEFT JOIN users u ON u.id=s.created_by
-            ORDER BY s.created_at DESC LIMIT 100"""
+            WHERE s.season_id=? ORDER BY s.created_at DESC LIMIT 100""", (season_id,)
         ).fetchall()]
     return {"items": items}
 
@@ -1295,14 +1682,14 @@ async def sync_run(request: Request) -> dict[str, Any]:
 @app.get("/api/reports/summary")
 async def report_summary(request: Request, date_from: str = "", date_to: str = "") -> dict[str, Any]:
     get_auth(request)
-    clauses = ["i.deleted_at IS NULL"]
-    params: list[Any] = []
-    if date_from:
-        clauses.append("i.invoice_date>=?"); params.append(date_from)
-    if date_to:
-        clauses.append("i.invoice_date<=?"); params.append(date_to)
-    where = " AND ".join(clauses)
     with connect() as conn:
+        clauses = ["i.deleted_at IS NULL", "i.season_id=?"]
+        params: list[Any] = [current_season_id(conn)]
+        if date_from:
+            clauses.append("i.invoice_date>=?"); params.append(date_from)
+        if date_to:
+            clauses.append("i.invoice_date<=?"); params.append(date_to)
+        where = " AND ".join(clauses)
         categories = [dict(row) for row in conn.execute(
             f"""SELECT COALESCE(c.name,'未分类') AS name,COALESCE(c.color,'#9aa7b7') AS color,
             COUNT(i.id) AS count,SUM(i.total_amount_cents) AS total_cents,

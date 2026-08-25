@@ -9,6 +9,7 @@ from .classification import PRODUCT_TYPES
 from .database import (
     audit,
     create_snapshot,
+    current_season_id,
     enqueue_sync_event,
     get_device_id,
     new_id,
@@ -70,6 +71,7 @@ def distribute_weighted(total_cents: int, weights: dict[str, Any]) -> dict[str, 
 
 
 def invoice_payload(conn: sqlite3.Connection, invoice_id: str) -> dict[str, Any] | None:
+    season_id = current_season_id(conn)
     invoice = conn.execute(
         """SELECT i.*,c.name AS category_name,c.color AS category_color,
         f.name AS funding_source_name,f.color AS funding_source_color,
@@ -85,8 +87,8 @@ def invoice_payload(conn: sqlite3.Connection, invoice_id: str) -> dict[str, Any]
         LEFT JOIN attachments a ON a.id=i.attachment_id
         LEFT JOIN users creator ON creator.id=i.created_by
         LEFT JOIN users uploader ON uploader.id=a.uploaded_by
-        WHERE i.id=?""",
-        (invoice_id,),
+        WHERE i.id=? AND i.season_id=?""",
+        (invoice_id, season_id),
     ).fetchone()
     if not invoice:
         return None
@@ -117,8 +119,8 @@ def list_invoices(
     date_to: str = "",
     limit: int = 500,
 ) -> list[dict[str, Any]]:
-    clauses = ["i.deleted_at IS NULL"]
-    params: list[Any] = []
+    clauses = ["i.deleted_at IS NULL", "i.season_id=?"]
+    params: list[Any] = [current_season_id(conn)]
     if search:
         pattern = f"%{search.strip()}%"
         clauses.append("(i.vendor LIKE ? OR i.invoice_no LIKE ? OR i.note LIKE ? OR i.product_type LIKE ?)")
@@ -146,8 +148,10 @@ def list_invoices(
 
 
 def _active_member_ids(conn: sqlite3.Connection) -> list[str]:
+    season_id = current_season_id(conn)
     return [row[0] for row in conn.execute(
-        "SELECT id FROM members WHERE active=1 AND deleted_at IS NULL ORDER BY sort_order,name"
+        "SELECT id FROM members WHERE season_id=? AND active=1 AND deleted_at IS NULL ORDER BY sort_order,name",
+        (season_id,),
     ).fetchall()]
 
 
@@ -201,9 +205,10 @@ def save_invoice(payload: dict[str, Any], user: dict[str, Any], invoice_id: str 
     now = utc_now()
 
     with transaction() as conn:
+        season_id = current_season_id(conn)
         payer_id = str(payload.get("payer_member_id") or "")
         payer = conn.execute(
-            "SELECT id FROM members WHERE id=? AND active=1 AND deleted_at IS NULL", (payer_id,)
+            "SELECT id FROM members WHERE id=? AND season_id=? AND active=1 AND deleted_at IS NULL", (payer_id, season_id)
         ).fetchone()
         if not payer:
             raise BusinessError("请选择有效垫付成员")
@@ -211,15 +216,20 @@ def save_invoice(payload: dict[str, Any], user: dict[str, Any], invoice_id: str 
         category_id = str(payload.get("category_id") or "") or None
         source_id = str(payload.get("funding_source_id") or "") or None
         attachment_id = str(payload.get("attachment_id") or "") or None
-        for table, value, label in (
-            ("categories", category_id, "分类"), ("funding_sources", source_id, "资金来源"), ("attachments", attachment_id, "附件")
-        ):
+        for table, value, label in (("categories", category_id, "分类"), ("funding_sources", source_id, "资金来源")):
             if value and not conn.execute(f"SELECT 1 FROM {table} WHERE id=? AND deleted_at IS NULL", (value,)).fetchone():
                 raise BusinessError(f"所选{label}不存在")
+        if attachment_id and not conn.execute(
+            "SELECT 1 FROM attachments WHERE id=? AND season_id=? AND deleted_at IS NULL",
+            (attachment_id, season_id),
+        ).fetchone():
+            raise BusinessError("所选附件不存在或不属于当前赛季")
 
         create_snapshot(conn, user["id"], "发票编辑前", f"{user['display_name']} 编辑经费记录")
         if invoice_id:
-            current = conn.execute("SELECT * FROM invoices WHERE id=? AND deleted_at IS NULL", (invoice_id,)).fetchone()
+            current = conn.execute(
+                "SELECT * FROM invoices WHERE id=? AND season_id=? AND deleted_at IS NULL", (invoice_id, season_id)
+            ).fetchone()
             if not current:
                 raise BusinessError("未找到该发票记录", 404)
             expected_version = int(payload["version"]) if "version" in payload else int(current["version"])
@@ -238,7 +248,7 @@ def save_invoice(payload: dict[str, Any], user: dict[str, Any], invoice_id: str 
 
         device_id = get_device_id(conn)
         values = {
-            "id": invoice_id,
+            "id": invoice_id, "season_id": season_id,
             "invoice_no": str(payload.get("invoice_no") or "").strip()[:80],
             "vendor": str(payload.get("vendor") or "").strip()[:160],
             "invoice_date": invoice_date,
@@ -281,7 +291,8 @@ def save_invoice(payload: dict[str, Any], user: dict[str, Any], invoice_id: str 
             split_id = existing["id"] if existing else new_id("split")
             paid_cents = min(int(existing["paid_cents"]), share_cents) if existing else 0
             split_values = {
-                "id": split_id, "invoice_id": invoice_id, "member_id": member_id, "share_cents": share_cents,
+                "id": split_id, "season_id": season_id, "invoice_id": invoice_id,
+                "member_id": member_id, "share_cents": share_cents,
                 "paid_cents": paid_cents,
                 "status": "paid" if paid_cents >= share_cents else ("partial" if paid_cents else "pending"),
                 "created_at": existing["created_at"] if existing else now, "updated_at": now,
@@ -311,7 +322,10 @@ def save_invoice(payload: dict[str, Any], user: dict[str, Any], invoice_id: str 
 
 def delete_invoice(invoice_id: str, user: dict[str, Any]) -> None:
     with transaction() as conn:
-        current = conn.execute("SELECT * FROM invoices WHERE id=? AND deleted_at IS NULL", (invoice_id,)).fetchone()
+        season_id = current_season_id(conn)
+        current = conn.execute(
+            "SELECT * FROM invoices WHERE id=? AND season_id=? AND deleted_at IS NULL", (invoice_id, season_id)
+        ).fetchone()
         if not current:
             raise BusinessError("未找到该发票记录", 404)
         create_snapshot(conn, user["id"], "删除发票前", str(current["vendor"] or current["invoice_no"] or invoice_id))
@@ -350,9 +364,10 @@ def batch_update_invoices(payload: dict[str, Any], user: dict[str, Any]) -> dict
 
     placeholders = ",".join("?" for _ in invoice_ids)
     with transaction() as conn:
+        season_id = current_season_id(conn)
         rows = [dict(row) for row in conn.execute(
-            f"SELECT * FROM invoices WHERE id IN ({placeholders}) AND deleted_at IS NULL",
-            invoice_ids,
+            f"SELECT * FROM invoices WHERE id IN ({placeholders}) AND season_id=? AND deleted_at IS NULL",
+            (*invoice_ids, season_id),
         ).fetchall()]
         if not rows:
             raise BusinessError("所选发票不存在或已删除", 404)
@@ -436,27 +451,32 @@ def batch_update_invoices(payload: dict[str, Any], user: dict[str, Any]) -> dict
 
 
 def dashboard(conn: sqlite3.Connection) -> dict[str, Any]:
+    season_id = current_season_id(conn)
     totals = conn.execute(
         """SELECT COUNT(*) AS invoice_count,COALESCE(SUM(total_amount_cents),0) AS total,
         COALESCE(SUM(total_amount_cents-reimbursed_amount_cents),0) AS pending,
         COALESCE(SUM(reimbursed_amount_cents),0) AS reimbursed
-        FROM invoices WHERE deleted_at IS NULL"""
+        FROM invoices WHERE season_id=? AND deleted_at IS NULL""",
+        (season_id,),
     ).fetchone()
     categories = [dict(row) for row in conn.execute(
         """SELECT COALESCE(c.name,'未分类') AS name,COALESCE(c.color,'#9aa7b7') AS color,
         COUNT(i.id) AS count,COALESCE(SUM(i.total_amount_cents),0) AS amount_cents
         FROM invoices i LEFT JOIN categories c ON c.id=i.category_id
-        WHERE i.deleted_at IS NULL GROUP BY i.category_id,c.name,c.color ORDER BY amount_cents DESC"""
+        WHERE i.season_id=? AND i.deleted_at IS NULL GROUP BY i.category_id,c.name,c.color ORDER BY amount_cents DESC""",
+        (season_id,),
     ).fetchall()]
     sources = [dict(row) for row in conn.execute(
         """SELECT COALESCE(f.name,'未选择') AS name,COALESCE(f.color,'#9aa7b7') AS color,
         COUNT(i.id) AS count,COALESCE(SUM(i.total_amount_cents),0) AS amount_cents
         FROM invoices i LEFT JOIN funding_sources f ON f.id=i.funding_source_id
-        WHERE i.deleted_at IS NULL GROUP BY i.funding_source_id,f.name,f.color ORDER BY amount_cents DESC"""
+        WHERE i.season_id=? AND i.deleted_at IS NULL GROUP BY i.funding_source_id,f.name,f.color ORDER BY amount_cents DESC""",
+        (season_id,),
     ).fetchall()]
     monthly = [dict(row) for row in conn.execute(
         """SELECT substr(invoice_date,1,7) AS month,COALESCE(SUM(total_amount_cents),0) AS amount_cents
-        FROM invoices WHERE deleted_at IS NULL GROUP BY substr(invoice_date,1,7) ORDER BY month DESC LIMIT 12"""
+        FROM invoices WHERE season_id=? AND deleted_at IS NULL GROUP BY substr(invoice_date,1,7) ORDER BY month DESC LIMIT 12""",
+        (season_id,),
     ).fetchall()][::-1]
     recent = list_invoices(conn, limit=6)
     for group in (categories, sources, monthly):
@@ -477,16 +497,20 @@ def dashboard(conn: sqlite3.Connection) -> dict[str, Any]:
 
 
 def settlement_summary(conn: sqlite3.Connection) -> dict[str, Any]:
+    season_id = current_season_id(conn)
     members = [dict(row) for row in conn.execute(
-        "SELECT id,name,department,avatar_color FROM members WHERE active=1 AND deleted_at IS NULL ORDER BY sort_order,name"
+        """SELECT id,name,department,avatar_color FROM members
+        WHERE season_id=? AND active=1 AND deleted_at IS NULL ORDER BY sort_order,name""",
+        (season_id,),
     ).fetchall()]
     balances = {member["id"]: 0 for member in members}
     paid_out = {member["id"]: 0 for member in members}
     owed = {member["id"]: 0 for member in members}
     invoices = conn.execute(
         """SELECT id,payer_member_id,total_amount_cents,reimbursed_amount_cents FROM invoices
-        WHERE deleted_at IS NULL AND burden_type IN ('team_aa','specified_split')
-        AND total_amount_cents>reimbursed_amount_cents"""
+        WHERE season_id=? AND deleted_at IS NULL AND burden_type IN ('team_aa','specified_split')
+        AND total_amount_cents>reimbursed_amount_cents""",
+        (season_id,),
     ).fetchall()
     for invoice in invoices:
         total = int(invoice["total_amount_cents"])
@@ -512,7 +536,9 @@ def settlement_summary(conn: sqlite3.Connection) -> dict[str, Any]:
                 owed[member_id] += share
 
     for transfer in conn.execute(
-        "SELECT from_member_id,to_member_id,amount_cents FROM settlements WHERE status='paid' AND deleted_at IS NULL"
+        """SELECT from_member_id,to_member_id,amount_cents FROM settlements
+        WHERE season_id=? AND status='paid' AND deleted_at IS NULL""",
+        (season_id,),
     ).fetchall():
         amount = int(transfer["amount_cents"])
         if transfer["from_member_id"] in balances:
@@ -569,14 +595,17 @@ def record_settlement(payload: dict[str, Any], user: dict[str, Any]) -> dict[str
     if from_id == to_id:
         raise BusinessError("付款人与收款人不能相同")
     with transaction() as conn:
-        valid = {row[0] for row in conn.execute("SELECT id FROM members WHERE active=1 AND deleted_at IS NULL")}
+        season_id = current_season_id(conn)
+        valid = {row[0] for row in conn.execute(
+            "SELECT id FROM members WHERE season_id=? AND active=1 AND deleted_at IS NULL", (season_id,)
+        )}
         if from_id not in valid or to_id not in valid:
             raise BusinessError("请选择有效成员")
         create_snapshot(conn, user["id"], "登记结算前", "成员AA结算")
         now = utc_now()
         entity_id = new_id("settlement")
         row = {
-            "id": entity_id, "from_member_id": from_id, "to_member_id": to_id,
+            "id": entity_id, "season_id": season_id, "from_member_id": from_id, "to_member_id": to_id,
             "amount_cents": amount_cents, "status": str(payload.get("status") or "paid"),
             "settled_at": str(payload.get("settled_at") or now[:10]), "note": str(payload.get("note") or "")[:500],
             "is_demo": 0, "created_by": user["id"], "created_at": now, "updated_at": now,
@@ -594,9 +623,14 @@ def record_settlement(payload: dict[str, Any], user: dict[str, Any]) -> dict[str
 
 def delete_demo_data(user: dict[str, Any]) -> int:
     with transaction() as conn:
+        season_id = current_season_id(conn)
         create_snapshot(conn, user["id"], "清除演示数据前", "管理员清理演示记录")
-        invoice_rows = conn.execute("SELECT * FROM invoices WHERE is_demo=1 AND deleted_at IS NULL").fetchall()
-        settlement_rows = conn.execute("SELECT * FROM settlements WHERE is_demo=1 AND deleted_at IS NULL").fetchall()
+        invoice_rows = conn.execute(
+            "SELECT * FROM invoices WHERE season_id=? AND is_demo=1 AND deleted_at IS NULL", (season_id,)
+        ).fetchall()
+        settlement_rows = conn.execute(
+            "SELECT * FROM settlements WHERE season_id=? AND is_demo=1 AND deleted_at IS NULL", (season_id,)
+        ).fetchall()
         now = utc_now()
         device_id = get_device_id(conn)
         count = 0
