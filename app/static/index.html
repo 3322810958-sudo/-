@@ -4,9 +4,9 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#07101b">
-  <title>燕翔车队经费管理系统 V2.2.2</title>
+  <title>燕翔车队经费管理系统 V2.2.3</title>
   <link rel="icon" href="/static/assets/team-logo.png">
-  <link rel="stylesheet" href="/static/app.css?v=2.2.2">
+  <link rel="stylesheet" href="/static/app.css?v=2.2.3">
 </head>
 <body>
   <div id="backgroundLayer" class="background-layer"><video id="appBackgroundVideo" muted loop autoplay playsinline></video></div>
@@ -34,7 +34,7 @@
       <div class="login-brand">
         <img src="/static/assets/team-logo.png" alt="燕翔车队队标">
         <div>
-          <p class="eyebrow">赛车运营 · V2.2.2</p>
+          <p class="eyebrow">赛车运营 · V2.2.3</p>
           <h1><span id="loginTeamName">燕翔车队</span><br><span>经费管理系统</span></h1>
         </div>
       </div>
@@ -76,7 +76,7 @@
         <div id="syncLamp" class="status-lamp"></div>
         <div><strong id="syncLabel">本地模式</strong><small id="syncDetail">数据安全保存在本机</small></div>
       </div>
-      <div class="sidebar-foot"><span>燕翔车队经费</span><span id="versionLabel">V2.2.2</span></div>
+      <div class="sidebar-foot"><span>燕翔车队经费</span><span id="versionLabel">V2.2.3</span></div>
     </aside>
 
     <div class="content-shell">
@@ -181,7 +181,7 @@
         </section>
 
         <section id="creatorsSection" class="view-section">
-          <div class="section-toolbar"><div><p class="eyebrow">项目署名</p><h3>创作者名单</h3><p>展示当前赛季参与软件建设与维护的车队成员。</p></div><button id="addCreatorBtn" class="btn primary hidden" data-admin>＋ 添加创作者</button></div>
+          <div class="section-toolbar"><div><p class="eyebrow">项目署名</p><h3>创作者名单</h3><p>全赛季共享，无需在新赛季重复添加。</p></div><button id="addCreatorBtn" class="btn primary hidden" data-admin>＋ 添加创作者</button></div>
           <div id="creatorSeasonHeading" class="creator-season-heading"></div>
           <div id="creatorCards" class="creator-cards"></div>
         </section>
@@ -439,7 +439,6 @@
       <header><div><p class="eyebrow">创作者名单</p><h3 id="creatorDialogTitle">添加创作者</h3></div><button type="button" class="dialog-close" data-close="creatorDialog">×</button></header>
       <input id="creatorId" type="hidden">
       <div class="form-grid two">
-        <label><span>赛季 *</span><select id="creatorSeason" required></select></label>
         <label><span>姓名 *</span><input id="creatorName" maxlength="80" required></label>
         <label><span>所属组别</span><input id="creatorDepartment" list="departmentOptions" maxlength="80" placeholder="例如：电气部"></label>
         <label><span>职责</span><input id="creatorRole" maxlength="80" placeholder="例如：高压"></label>
@@ -453,7 +452,7 @@
   <dialog id="updateDialog" class="modal">
     <div class="modal-card">
       <header><div><p class="eyebrow">版本管理</p><h3>更新日志与自动更新</h3></div><button type="button" class="dialog-close" data-close="updateDialog">×</button></header>
-      <div class="update-current"><div><span>当前版本</span><strong id="updateCurrentVersion">V2.2.2</strong></div><label class="mini-switch"><input id="autoUpdateCheck" type="checkbox" checked><span>启动后自动检查</span></label></div>
+      <div class="update-current"><div><span>当前版本</span><strong id="updateCurrentVersion">V2.2.3</strong></div><label class="mini-switch"><input id="autoUpdateCheck" type="checkbox" checked><span>启动后自动检查</span></label></div>
       <div class="update-actions"><button id="checkUpdateBtn" type="button" class="btn secondary">检查 GitHub 新版本</button><a id="updateReleaseLink" class="btn secondary hidden" target="_blank" rel="noopener">查看发布页面</a><button id="installUpdateBtn" type="button" class="btn primary hidden">一键更新到最新版</button></div>
       <div id="updateStatus" class="update-status">正在读取本地更新日志……</div>
       <div id="changelogList" class="changelog-list"></div>
@@ -478,6 +477,6 @@
       <small id="loadingDetail">任务正在本机运行，请勿关闭软件</small>
     </div>
   </div>
-  <script src="/static/app.js?v=2.2.2"></script>
+  <script src="/static/app.js?v=2.2.3"></script>
 </body>
 </html>

@@ -1,8 +1,9 @@
 ﻿param(
-  [string]$Version = "2.2.2",
+  [string]$Version = "2.2.3",
   [string]$PythonPath = "",
   [switch]$SkipBuild,
-  [switch]$SkipTutorialPdf
+  [switch]$SkipTutorialPdf,
+  [switch]$PatchOnly
 )
 
 $ErrorActionPreference = "Stop"
@@ -58,7 +59,9 @@ $updateZip = Join-Path $releaseDir "燕翔车队经费管理系统_V$Version`_Wi
 $tempRoot = [IO.Path]::GetFullPath([IO.Path]::GetTempPath())
 $patchStage = Join-Path $tempRoot "yxrt-update-stage-$PID-$Version"
 
-foreach ($path in @($fullZip, "$fullZip.sha256", $updateZip, "$updateZip.sha256")) {
+$outputsToReplace = @($updateZip, "$updateZip.sha256")
+if (-not $PatchOnly) { $outputsToReplace += @($fullZip, "$fullZip.sha256") }
+foreach ($path in $outputsToReplace) {
   if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Force }
 }
 if (Test-Path -LiteralPath $patchStage) {
@@ -69,7 +72,9 @@ if (Test-Path -LiteralPath $patchStage) {
   Remove-Item -LiteralPath $resolvedStage -Recurse -Force
 }
 
-Compress-Archive -Path (Join-Path $target "*") -DestinationPath $fullZip -CompressionLevel Optimal
+if (-not $PatchOnly) {
+  Compress-Archive -Path (Join-Path $target "*") -DestinationPath $fullZip -CompressionLevel Optimal
+}
 New-Item -ItemType Directory -Path $patchStage -Force | Out-Null
 $deltaItems = @("燕翔车队经费管理系统.exe", "web", "README.md", "README_FIRST.txt", "CHANGELOG.md")
 foreach ($name in $deltaItems) {
@@ -80,11 +85,13 @@ Copy-Item -LiteralPath (Join-Path $root "docs\补丁安装说明.txt") -Destinat
 Compress-Archive -Path (Join-Path $patchStage "*") -DestinationPath $updateZip -CompressionLevel Optimal
 Remove-Item -LiteralPath $patchStage -Recurse -Force
 
-foreach ($package in @($fullZip, $updateZip)) {
+$packagesToHash = @($updateZip)
+if (-not $PatchOnly) { $packagesToHash += $fullZip }
+foreach ($package in $packagesToHash) {
   $hash = (Get-FileHash -LiteralPath $package -Algorithm SHA256).Hash.ToLowerInvariant()
   "$hash  $([IO.Path]::GetFileName($package))" | Out-File -LiteralPath "$package.sha256" -Encoding ascii
 }
 
 Write-Host "已生成："
-Write-Host $fullZip
+if (-not $PatchOnly) { Write-Host $fullZip }
 Write-Host $updateZip

@@ -34,7 +34,6 @@ BUSINESS_TABLES = (
     "settlements",
 )
 SEASON_BUSINESS_TABLES = (
-    "creators",
     "members",
     "attachments",
     "invoices",
@@ -552,7 +551,7 @@ def row_dict(conn: sqlite3.Connection, table: str, entity_id: str, id_column: st
 def snapshot_state(conn: sqlite3.Connection) -> dict[str, Any]:
     season_id = current_season_id(conn)
     state: dict[str, Any] = {
-        "schema_version": 5,
+        "schema_version": 6,
         "season_id": season_id,
         "captured_at": utc_now(),
         "tables": {},
@@ -611,13 +610,13 @@ def restore_snapshot(conn: sqlite3.Connection, snapshot_id: str, user_id: str) -
     }
 
     for table in (
-        "invoice_splits", "settlements", "invoices", "attachments", "creators",
+        "invoice_splits", "settlements", "invoices", "attachments",
         "members",
     ):
         conn.execute(f"DELETE FROM {table} WHERE season_id=?", (restore_season_id,))
 
     for table in (
-        "members", "attachments", "invoices", "invoice_splits", "settlements", "creators",
+        "members", "attachments", "invoices", "invoice_splits", "settlements",
     ):
         for item in tables.get(table, []):
             item = {**item, "season_id": restore_season_id}

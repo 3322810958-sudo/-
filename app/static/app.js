@@ -11,7 +11,7 @@ const state = {
   shortcuts: {}, shortcutDraft: {},
   loadingTimer: null, loadingProgress: 0, loadingToken: 0, updateRelease: null,
   currentInvoicePreview: null, batchPreviewFiles: [], attachmentViewerZoom: 1,
-  version: "2.2.2", updateJobId: "",
+  version: "2.2.3", updateJobId: "",
 };
 
 const DISPLAY_MODE_KEY = "yanxiang-display-mode";
@@ -34,7 +34,7 @@ const SHORTCUT_DEFINITIONS = [
   { id: "reports", label: "分类统计", description: "切换到分类统计", defaultKey: "Alt+4" },
   { id: "members", label: "成员与账号", description: "切换到成员与账号", defaultKey: "Alt+5" },
   { id: "history", label: "日志与回溯", description: "管理员切换到版本回溯", defaultKey: "Alt+6" },
-  { id: "creators", label: "创作者名单", description: "查看当前赛季创作者", defaultKey: "Alt+7" },
+  { id: "creators", label: "创作者名单", description: "查看全赛季共享创作者", defaultKey: "Alt+7" },
   { id: "settings", label: "系统设置", description: "切换到系统设置", defaultKey: "Alt+8" },
   { id: "cycle_theme", label: "切换显示模式", description: "循环切换三种显示模式", defaultKey: "Alt+T" },
 ];
@@ -391,7 +391,7 @@ function applyTheme() {
     if (video.getAttribute("src") !== mediaUrl) video.src = mediaUrl;
     video.classList.add("active"); video.play().catch(() => {});
   } else { video.pause(); video.removeAttribute("src"); video.load(); video.classList.remove("active"); }
-  document.title = `${settings.team_name || "燕翔车队"} · 经费管理系统 V${state.version || "2.2.2"}`;
+  document.title = `${settings.team_name || "燕翔车队"} · 经费管理系统 V${state.version || "2.2.3"}`;
 }
 
 function applyAccess() {
@@ -443,7 +443,7 @@ async function loadBootstrap() {
   state.settings = data.settings || {};
   state.dashboard = data.dashboard;
   state.sync = data.sync || {};
-  state.version = data.version || "2.2.2";
+  state.version = data.version || "2.2.3";
   $("versionLabel").textContent = `V${data.version}`;
   $("updateCurrentVersion").textContent = `V${state.version}`;
   state.publicSettings = state.settings; applyTheme(); applyAccess(); renderSync(state.sync); renderReferenceOptions(); renderDashboard(); showApp(); connectSocket();
@@ -1272,13 +1272,12 @@ async function loadCreators() {
 }
 
 function renderCreators() {
-  const seasonName = state.season?.name || "当前赛季";
-  $("creatorSeasonHeading").innerHTML = `<b>${escapeHtml(seasonName)}</b><span>${state.creators.length} 位创作者</span>`;
+  $("creatorSeasonHeading").innerHTML = `<b>全赛季共享</b><span>${state.creators.length} 位创作者，新赛季无需重复添加</span>`;
   $("creatorCards").innerHTML = state.creators.map((item) => `<article class="creator-card${item.active ? "" : " inactive"}">
-    <div class="creator-meta"><span>${escapeHtml(item.season_name || seasonName)}</span><span>${escapeHtml(item.department || "未填写组别")}</span><span>${escapeHtml(item.role_title || "创作者")}</span>${item.active ? "" : "<span>已隐藏</span>"}</div>
+    <div class="creator-meta"><span>全赛季通用</span><span>${escapeHtml(item.department || "未填写组别")}</span><span>${escapeHtml(item.role_title || "创作者")}</span>${item.active ? "" : "<span>已隐藏</span>"}</div>
     <h4>${escapeHtml(item.name)}</h4><p>${escapeHtml(item.note || "参与软件建设与维护")}</p>
     ${isAdmin() ? `<footer><button class="row-action" data-creator-edit="${escapeHtml(item.id)}" title="编辑创作者">✎</button></footer>` : ""}
-  </article>`).join("") || `<div class="empty-state">${escapeHtml(seasonName)}尚未添加创作者名单</div>`;
+  </article>`).join("") || `<div class="empty-state">尚未添加全赛季创作者名单</div>`;
 }
 
 async function loadSeasons() {
@@ -1357,10 +1356,7 @@ async function createDepartment(event) {
 
 async function openCreator(item = null) {
   if (!isAdmin()) return;
-  if (!state.seasons.length) await loadSeasons();
   $("creatorForm").reset(); $("creatorId").value = item?.id || "";
-  $("creatorSeason").innerHTML = state.seasons.map((season) => `<option value="${escapeHtml(season.id)}">${escapeHtml(season.name)}${season.is_open ? "" : "（已归档）"}</option>`).join("");
-  $("creatorSeason").value = item?.season_id || state.season?.id || state.seasons[0]?.id || "";
   $("creatorName").value = item?.name || ""; $("creatorDepartment").value = item?.department || "";
   $("creatorRole").value = item?.role_title || ""; $("creatorNote").value = item?.note || "";
   $("creatorActive").checked = item ? Boolean(item.active) : true;
@@ -1370,7 +1366,7 @@ async function openCreator(item = null) {
 
 async function saveCreator(event) {
   event.preventDefault(); const id = $("creatorId").value;
-  const payload = { season_id: $("creatorSeason").value, name: $("creatorName").value, department: $("creatorDepartment").value, role_title: $("creatorRole").value, note: $("creatorNote").value, active: $("creatorActive").checked };
+  const payload = { name: $("creatorName").value, department: $("creatorDepartment").value, role_title: $("creatorRole").value, note: $("creatorNote").value, active: $("creatorActive").checked };
   try {
     await api(id ? `/api/admin/creators/${encodeURIComponent(id)}` : "/api/admin/creators", { method: id ? "PUT" : "POST", body: payload });
     $("creatorDialog").close(); await refreshCurrentView(true); if (state.currentView === "creators") renderCreators(); toast("创作者名单已保存");

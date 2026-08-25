@@ -274,7 +274,7 @@ def test_v22_multiple_file_import_and_editable_loading_cars():
         assert public["loading_cars"][0]["url"].startswith("/api/public/media/")
 
 
-def test_v221_season_isolation_and_creator_management():
+def test_season_isolation_and_global_creator_management():
     with TestClient(app) as admin:
         _, headers = login(admin, "admin", "YXRT@2026")
         initial = admin.get("/api/bootstrap").json()
@@ -297,6 +297,7 @@ def test_v221_season_isolation_and_creator_management():
         assert fresh["season"]["name"] == "2027赛季"
         assert fresh["members"] == []
         assert fresh["dashboard"]["invoice_count"] == 0
+        assert any(item["name"] == "刘松宁" for item in fresh["creators"])
         assert {item["name"] for item in fresh["departments"]}.issuperset({"电气部", "底盘部", "车身部", "市场部"})
 
         creator = admin.post(
@@ -326,12 +327,19 @@ def test_v221_season_isolation_and_creator_management():
         with TestClient(app) as new_member:
             payload, _ = login(new_member, "season2027member", "Season2027")
             assert payload["user"]["role"] == "member"
-            assert new_member.get("/api/creators").json()["items"][0]["name"] == "测试创作者"
+            creator_names = {item["name"] for item in new_member.get("/api/creators").json()["items"]}
+            assert creator_names.issuperset({"刘松宁", "测试创作者"})
 
         snapshot = admin.post(
             "/api/admin/snapshots", json={"label": "2027赛季隔离回溯测试"}, headers=headers
         )
         assert snapshot.status_code == 200, snapshot.text
+        global_update = admin.put(
+            f"/api/admin/creators/{creator.json()['id']}",
+            json={"name": "全赛季测试创作者", "department": "电气部", "role_title": "低压"},
+            headers=headers,
+        )
+        assert global_update.status_code == 200, global_update.text
         added_after_snapshot = admin.post(
             "/api/members", json={"name": "回溯后新增成员", "department": "底盘部"}, headers=headers
         )
@@ -343,6 +351,7 @@ def test_v221_season_isolation_and_creator_management():
         assert restored["members"]
         assert all(item["name"] != "2027成员" for item in restored["members"])
         assert any(item["name"] == "刘松宁" for item in restored["creators"])
+        assert any(item["name"] == "全赛季测试创作者" for item in restored["creators"])
 
         member_count_2026 = len(restored["members"])
         assert admin.post(f"/api/admin/seasons/{season_2027['id']}/switch", headers=headers).status_code == 200
@@ -353,6 +362,7 @@ def test_v221_season_isolation_and_creator_management():
         season_after_rollback = admin.get("/api/bootstrap").json()
         assert any(item["name"] == "2027成员" for item in season_after_rollback["members"])
         assert all(item["name"] != "回溯后新增成员" for item in season_after_rollback["members"])
+        assert any(item["name"] == "全赛季测试创作者" for item in season_after_rollback["creators"])
         assert admin.post(f"/api/admin/seasons/{season_2026['id']}/switch", headers=headers).status_code == 200
         assert len(admin.get("/api/bootstrap").json()["members"]) == member_count_2026
 

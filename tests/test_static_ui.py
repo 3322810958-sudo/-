@@ -47,6 +47,9 @@ def test_season_and_creator_interfaces_are_wired() -> None:
     assert "/api/admin/creators" in JS
     assert "openSeasonManager" in JS
     assert "renderCreators" in JS
+    assert "全赛季共享" in HTML and "全赛季共享" in JS
+    assert 'id="creatorSeason"' not in HTML
+    assert '$("creatorSeason")' not in JS
 
 
 def test_v222_previews_pdf_backup_and_defaults_are_wired() -> None:

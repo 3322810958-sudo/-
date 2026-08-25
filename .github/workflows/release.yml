@@ -35,12 +35,12 @@ jobs:
         run: python -m pytest tests -q --import-mode=importlib -p no:cacheprovider
       - name: 准备离线 OCR 模型
         run: python scripts/prefetch_ocr_models.py
-      - name: 构建完整版、轻量无损补丁与校验文件
+      - name: 构建轻量无损补丁与校验文件
         shell: pwsh
         run: |
           $tag = "${{ github.event.inputs.version || github.ref_name }}"
           $version = $tag.TrimStart("v")
-          & .\scripts\build_release.ps1 -Version $version -SkipTutorialPdf
+          & .\scripts\build_release.ps1 -Version $version -SkipTutorialPdf -PatchOnly
           if ($LASTEXITCODE -ne 0) { throw "Windows 发布包构建失败" }
       - name: 发布 GitHub Release
         uses: softprops/action-gh-release@v2

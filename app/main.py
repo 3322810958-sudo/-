@@ -434,9 +434,10 @@ def _reference_data(conn: sqlite3.Connection) -> dict[str, Any]:
         "SELECT * FROM departments WHERE deleted_at IS NULL ORDER BY sort_order,name"
     ).fetchall()]
     creators = [dict(row) for row in conn.execute(
-        """SELECT c.*,s.name AS season_name FROM creators c JOIN seasons s ON s.id=c.season_id
-        WHERE c.season_id=? AND c.active=1 AND c.deleted_at IS NULL
-        ORDER BY c.sort_order,c.department,c.name""", (season["id"],)
+        """SELECT c.*,s.name AS origin_season_name,'全赛季通用' AS season_name
+        FROM creators c JOIN seasons s ON s.id=c.season_id
+        WHERE c.active=1 AND c.deleted_at IS NULL
+        ORDER BY c.sort_order,c.department,c.name"""
     ).fetchall()]
     settings = _appearance_settings(conn)
     settings["invoice_defaults"] = _invoice_defaults(conn)
@@ -476,7 +477,7 @@ def _season_items(conn: sqlite3.Connection) -> list[dict[str, Any]]:
         """SELECT s.*,
         (SELECT COUNT(*) FROM members m WHERE m.season_id=s.id AND m.deleted_at IS NULL) AS member_count,
         (SELECT COUNT(*) FROM invoices i WHERE i.season_id=s.id AND i.deleted_at IS NULL) AS invoice_count,
-        (SELECT COUNT(*) FROM creators c WHERE c.season_id=s.id AND c.active=1 AND c.deleted_at IS NULL) AS creator_count
+        (SELECT COUNT(*) FROM creators c WHERE c.active=1 AND c.deleted_at IS NULL) AS creator_count
         FROM seasons s WHERE s.deleted_at IS NULL ORDER BY s.sort_order DESC,s.created_at DESC"""
     ).fetchall()]
     for item in rows:
@@ -645,7 +646,8 @@ async def departments_create(payload: dict[str, Any], request: Request) -> dict[
 
 def _creator_payload(conn: sqlite3.Connection, creator_id: str) -> dict[str, Any] | None:
     row = conn.execute(
-        """SELECT c.*,s.name AS season_name FROM creators c JOIN seasons s ON s.id=c.season_id
+        """SELECT c.*,s.name AS origin_season_name,'全赛季通用' AS season_name
+        FROM creators c JOIN seasons s ON s.id=c.season_id
         WHERE c.id=? AND c.deleted_at IS NULL""", (creator_id,)
     ).fetchone()
     return dict(row) if row else None
@@ -655,12 +657,12 @@ def _creator_payload(conn: sqlite3.Connection, creator_id: str) -> dict[str, Any
 async def creators_list(request: Request) -> dict[str, Any]:
     auth = get_auth(request)
     with connect() as conn:
-        season_id = current_season_id(conn)
         active_clause = "" if auth.user["role"] == "admin" else "AND c.active=1"
         items = [dict(row) for row in conn.execute(
-            f"""SELECT c.*,s.name AS season_name FROM creators c JOIN seasons s ON s.id=c.season_id
-            WHERE c.season_id=? {active_clause} AND c.deleted_at IS NULL
-            ORDER BY c.active DESC,c.sort_order,c.department,c.name""", (season_id,)
+            f"""SELECT c.*,s.name AS origin_season_name,'全赛季通用' AS season_name
+            FROM creators c JOIN seasons s ON s.id=c.season_id
+            WHERE c.deleted_at IS NULL {active_clause}
+            ORDER BY c.active DESC,c.sort_order,c.department,c.name"""
         ).fetchall()]
     return {"items": items}
 
@@ -668,14 +670,14 @@ async def creators_list(request: Request) -> dict[str, Any]:
 @app.get("/api/public/creators")
 async def creators_public() -> dict[str, Any]:
     with connect() as conn:
-        season = current_season(conn)
         items = [dict(row) for row in conn.execute(
-            """SELECT c.name,c.department,c.role_title,c.note,c.sort_order,s.name AS season_name
+            """SELECT c.name,c.department,c.role_title,c.note,c.sort_order,
+            s.name AS origin_season_name,'全赛季通用' AS season_name
             FROM creators c JOIN seasons s ON s.id=c.season_id
-            WHERE c.season_id=? AND c.active=1 AND c.deleted_at IS NULL
-            ORDER BY c.sort_order,c.department,c.name""", (season["id"],)
+            WHERE c.active=1 AND c.deleted_at IS NULL
+            ORDER BY c.sort_order,c.department,c.name"""
         ).fetchall()]
-    return {"season": season["name"], "items": items}
+    return {"season": "全赛季通用", "items": items}
 
 
 @app.post("/api/admin/creators")
@@ -687,9 +689,7 @@ async def creators_create(payload: dict[str, Any], request: Request) -> dict[str
     if not name:
         raise HTTPException(status_code=400, detail="创作者姓名不能为空")
     with transaction() as conn:
-        season_id = str(payload.get("season_id") or current_season_id(conn))
-        if not conn.execute("SELECT 1 FROM seasons WHERE id=? AND deleted_at IS NULL", (season_id,)).fetchone():
-            raise HTTPException(status_code=400, detail="所选赛季不存在")
+        season_id = current_season_id(conn)
         department = str(payload.get("department") or "").strip()[:80]
         _ensure_department(conn, department)
         now = utc_now()
@@ -699,7 +699,7 @@ async def creators_create(payload: dict[str, Any], request: Request) -> dict[str
             "note": str(payload.get("note") or "").strip()[:500],
             "active": int(bool(payload.get("active", True))),
             "sort_order": int(conn.execute(
-                "SELECT COALESCE(MAX(sort_order),-1)+1 FROM creators WHERE season_id=?", (season_id,)
+                "SELECT COALESCE(MAX(sort_order),-1)+1 FROM creators"
             ).fetchone()[0]),
             "created_at": now, "updated_at": now, "version": 1,
             "device_id": get_device_id(conn), "deleted_at": None,
@@ -731,13 +731,10 @@ async def creators_update(creator_id: str, payload: dict[str, Any], request: Req
         name = str(payload.get("name", item["name"]) or "").strip()
         if not name:
             raise HTTPException(status_code=400, detail="创作者姓名不能为空")
-        season_id = str(payload.get("season_id") or item["season_id"])
-        if not conn.execute("SELECT 1 FROM seasons WHERE id=? AND deleted_at IS NULL", (season_id,)).fetchone():
-            raise HTTPException(status_code=400, detail="所选赛季不存在")
         department = str(payload.get("department", item["department"]) or "").strip()[:80]
         _ensure_department(conn, department)
         item.update({
-            "season_id": season_id, "name": name[:80], "department": department,
+            "name": name[:80], "department": department,
             "role_title": str(payload.get("role_title", item["role_title"]) or "").strip()[:80],
             "note": str(payload.get("note", item["note"]) or "").strip()[:500],
             "active": int(bool(payload.get("active", item["active"]))),
