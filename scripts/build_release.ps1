@@ -1,5 +1,6 @@
 ﻿param(
   [string]$Version = "2.2.2",
+  [string]$PythonPath = "",
   [switch]$SkipBuild,
   [switch]$SkipTutorialPdf
 )
@@ -8,12 +9,19 @@ $ErrorActionPreference = "Stop"
 $root = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
 $target = Join-Path $root "dist\燕翔车队经费管理系统"
 $releaseDir = Join-Path $root "release"
-$python = Join-Path $root ".venv\Scripts\python.exe"
+$localPython = Join-Path $root ".venv\Scripts\python.exe"
+if ($PythonPath) {
+  $python = [IO.Path]::GetFullPath($PythonPath)
+} elseif (Test-Path -LiteralPath $localPython -PathType Leaf) {
+  $python = $localPython
+} else {
+  $python = (Get-Command python -ErrorAction Stop).Source
+}
 
 Set-Location -LiteralPath $root
 if (-not $SkipBuild) {
   if (-not (Test-Path -LiteralPath $python -PathType Leaf)) {
-    throw "缺少本地开发环境，请先运行 INSTALL_WINDOWS.cmd"
+    throw "缺少 Python 构建环境，请先运行 INSTALL_WINDOWS.cmd"
   }
   & $python -m PyInstaller --noconfirm --clean YanxiangExpenseV2.spec
   if ($LASTEXITCODE -ne 0) { throw "Windows 软件构建失败" }
