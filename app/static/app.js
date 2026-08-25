@@ -10,12 +10,13 @@ const state = {
   wallpapers: [], classificationRules: [], decisionResolve: null,
   shortcuts: {}, shortcutDraft: {},
   loadingTimer: null, loadingProgress: 0, loadingToken: 0, updateRelease: null,
-  version: "2.2.1", updateJobId: "",
+  currentInvoicePreview: null, batchPreviewFiles: [], attachmentViewerZoom: 1,
+  version: "2.2.2", updateJobId: "",
 };
 
 const DISPLAY_MODE_KEY = "yanxiang-display-mode";
-const DISPLAY_MODES = new Set(["clear-dark", "light", "racing-blue"]);
-const DISPLAY_MODE_LABELS = { "clear-dark": "清晰深色", light: "护眼浅色", "racing-blue": "赛车蓝（高对比）" };
+const DISPLAY_MODES = new Set(["clear-dark", "light", "racing-blue", "graphite", "midnight", "teal", "warm"]);
+const DISPLAY_MODE_LABELS = { "clear-dark": "清晰深色", light: "护眼浅色", "racing-blue": "赛车蓝（高对比）", graphite: "石墨灰", midnight: "午夜紫", teal: "工程青", warm: "暖灰护眼" };
 const SHORTCUT_STORAGE_KEY = "yanxiang-shortcuts-v1";
 const AUTO_UPDATE_STORAGE_KEY = "yanxiang-auto-update-check";
 const LAST_UPDATE_CHECK_KEY = "yanxiang-last-update-check";
@@ -46,7 +47,7 @@ const nowDate = () => new Date().toISOString().slice(0, 10);
 const escapeHtml = (value) => String(value ?? "").replace(/[&<>'"]/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;" }[char]));
 const roleLabel = (role) => ({ admin: "管理员", member: "成员", viewer: "公共只读" }[role] || role);
 const statusLabel = (status) => ({ pending: "未报销", partial: "部分报销", reimbursed: "已报销" }[status] || status);
-const burdenLabel = (type) => ({ team_aa: "全队 AA", specified_split: "指定成员", self_paid: "个人承担" }[type] || type);
+const burdenLabel = (type) => state.settings?.invoice_defaults?.burden_labels?.[type] || ({ team_aa: "全队 AA", specified_split: "指定成员", self_paid: "个人承担" }[type] || type);
 const actionLabel = (action) => ({ create: "新增", update: "修改", delete: "删除", login: "登录", logout: "退出", restore: "版本回溯", upload: "上传附件", seed: "初始化", archive: "停用", switch: "切换赛季", sync_apply: "同步应用", sync_conflict: "同步冲突", create_snapshot: "建立版本", delete_demo: "清除演示数据", batch_import: "批量导入", batch_delete: "批量删除", batch_category: "批量修改分类", batch_status: "批量修改状态", ocr_complete: "OCR 完成", change_credentials: "修改账号" }[action] || action);
 
 function savedDisplayMode() {
@@ -65,7 +66,7 @@ function applyDisplayMode(mode, persist = true) {
   document.documentElement.dataset.theme = safe;
   $$('[data-theme-select]').forEach((select) => { select.value = safe; });
   const themeMeta = document.querySelector('meta[name="theme-color"]');
-  if (themeMeta) themeMeta.content = { "clear-dark": "#09131e", light: "#edf3f7", "racing-blue": "#0b2942" }[safe];
+  if (themeMeta) themeMeta.content = { "clear-dark": "#09131e", light: "#edf3f7", "racing-blue": "#0b2942", graphite: "#20252a", midnight: "#171329", teal: "#0c2929", warm: "#efe9df" }[safe];
   if (persist) {
     try { localStorage.setItem(DISPLAY_MODE_KEY, safe); } catch (_) { /* 浏览器禁用本地存储时仍可临时切换 */ }
   }
@@ -390,7 +391,7 @@ function applyTheme() {
     if (video.getAttribute("src") !== mediaUrl) video.src = mediaUrl;
     video.classList.add("active"); video.play().catch(() => {});
   } else { video.pause(); video.removeAttribute("src"); video.load(); video.classList.remove("active"); }
-  document.title = `${settings.team_name || "燕翔车队"} · 经费管理系统 V${state.version || "2.2.1"}`;
+  document.title = `${settings.team_name || "燕翔车队"} · 经费管理系统 V${state.version || "2.2.2"}`;
 }
 
 function applyAccess() {
@@ -442,7 +443,7 @@ async function loadBootstrap() {
   state.settings = data.settings || {};
   state.dashboard = data.dashboard;
   state.sync = data.sync || {};
-  state.version = data.version || "2.2.1";
+  state.version = data.version || "2.2.2";
   $("versionLabel").textContent = `V${data.version}`;
   $("updateCurrentVersion").textContent = `V${state.version}`;
   state.publicSettings = state.settings; applyTheme(); applyAccess(); renderSync(state.sync); renderReferenceOptions(); renderDashboard(); showApp(); connectSocket();
@@ -455,16 +456,19 @@ async function loadBootstrap() {
 function renderReferenceOptions() {
   const activeMembers = state.members.filter((item) => item.active && !item.deleted_at);
   const memberOptions = activeMembers.map((item) => `<option value="${escapeHtml(item.id)}">${escapeHtml(item.name)} · ${escapeHtml(item.department || "未分组")}</option>`).join("");
-  ["invoicePayer", "batchPayer", "settlementFrom", "settlementTo"].forEach((id) => { if ($(id)) $(id).innerHTML = memberOptions; });
+  ["invoicePayer", "batchPayer", "defaultInvoicePayer", "settlementFrom", "settlementTo"].forEach((id) => { if ($(id)) $(id).innerHTML = memberOptions; });
   $("editUserMember").innerHTML = `<option value="">不关联</option>${memberOptions}`;
   const categoryOptions = state.categories.filter((item) => item.active && !item.deleted_at).map((item) => `<option value="${escapeHtml(item.id)}">${escapeHtml(item.name)}</option>`).join("");
-  ["invoiceCategory", "batchCategory"].forEach((id) => { $(id).innerHTML = `<option value="">未分类</option>${categoryOptions}`; });
+  ["invoiceCategory", "batchCategory", "defaultInvoiceCategory"].forEach((id) => { if ($(id)) $(id).innerHTML = `<option value="">未分类</option>${categoryOptions}`; });
   $("invoiceCategoryFilter").innerHTML = `<option value="">全部分类</option>${categoryOptions}`;
   const sourceOptions = state.fundingSources.filter((item) => item.active && !item.deleted_at).map((item) => `<option value="${escapeHtml(item.id)}">${escapeHtml(item.name)}</option>`).join("");
-  ["invoiceSource", "batchSource"].forEach((id) => { $(id).innerHTML = `<option value="">未选择</option>${sourceOptions}`; });
+  ["invoiceSource", "batchSource", "defaultInvoiceSource"].forEach((id) => { if ($(id)) $(id).innerHTML = `<option value="">未选择</option>${sourceOptions}`; });
   $("invoiceSourceFilter").innerHTML = `<option value="">全部来源</option>${sourceOptions}`;
   $("invoiceProduct").innerHTML = state.productTypes.map((item) => `<option>${escapeHtml(item)}</option>`).join("");
   $("departmentOptions").innerHTML = state.departments.map((item) => `<option value="${escapeHtml(item.name)}"></option>`).join("");
+  const burdenOptions = ["team_aa", "specified_split", "self_paid"].map((value) => `<option value="${value}">${escapeHtml(burdenLabel(value))}</option>`).join("");
+  ["batchBurden", "defaultInvoiceBurden"].forEach((id) => { if ($(id)) { const current = $(id).value; $(id).innerHTML = burdenOptions; if (["team_aa", "specified_split", "self_paid"].includes(current)) $(id).value = current; } });
+  $$('#invoiceForm input[name="burdenType"]').forEach((input) => { const span = input.nextElementSibling; if (span) span.textContent = burdenLabel(input.value); });
   renderReferenceManagers();
 }
 
@@ -515,6 +519,52 @@ async function saveSource(event) {
     const item = await api(id ? `/api/funding-sources/${encodeURIComponent(id)}` : "/api/funding-sources", { method: id ? "PUT" : "POST", body: { name: $("sourceName").value, source_type: $("sourceType").value, color: $("sourceColor").value, active: $("sourceActive").checked } });
     upsertReference(state.fundingSources, item); renderReferenceOptions(); resetSourceEditor(); toast(id ? "资金来源已更新" : "资金来源已添加");
   } catch (error) { toast(error.message, "error"); }
+}
+
+function activeMembers() { return state.members.filter((item) => item.active && !item.deleted_at); }
+
+function renderSimpleMemberPicker(containerId, selected = [], disabled = false) {
+  const selectedSet = new Set(selected);
+  $(containerId).innerHTML = activeMembers().map((item) => `<label class="split-member ${disabled ? "disabled" : ""}" style="--member-color:${escapeHtml(item.avatar_color)}"><input type="checkbox" value="${escapeHtml(item.id)}" ${selectedSet.has(item.id) ? "checked" : ""} ${disabled ? "disabled" : ""}><strong>${escapeHtml(item.name)}</strong></label>`).join("") || `<div class="empty-state">当前赛季没有可用成员</div>`;
+}
+
+function simpleMemberIds(containerId) { return $$(`#${containerId} input[type="checkbox"]:checked`).map((input) => input.value); }
+
+function updateBatchSplitVisibility() {
+  const specified = $("batchBurden").value === "specified_split";
+  $("batchSplitWrap").classList.toggle("hidden", !specified);
+  if (specified && !simpleMemberIds("batchSplitMembers").length) renderSimpleMemberPicker("batchSplitMembers", activeMembers().map((item) => item.id));
+}
+
+function updateDefaultSplitVisibility() {
+  const specified = $("defaultInvoiceBurden").value === "specified_split";
+  $("defaultSplitWrap").classList.toggle("hidden", !specified);
+}
+
+function openInvoiceDefaults() {
+  renderReferenceOptions();
+  const defaults = state.settings.invoice_defaults || {};
+  $("defaultInvoiceCategory").value = defaults.category_id || "";
+  $("defaultInvoicePayer").value = activeMembers().some((item) => item.id === defaults.payer_member_id) ? defaults.payer_member_id : (state.user.member_id || activeMembers()[0]?.id || "");
+  $("defaultInvoiceSource").value = defaults.funding_source_id || "";
+  $("defaultInvoiceBurden").value = defaults.burden_type || "team_aa";
+  $("defaultBatchNote").value = defaults.batch_note || "";
+  $("burdenLabelTeam").value = burdenLabel("team_aa"); $("burdenLabelSpecified").value = burdenLabel("specified_split"); $("burdenLabelSelf").value = burdenLabel("self_paid");
+  renderSimpleMemberPicker("defaultSplitMembers", defaults.split_member_ids || []);
+  updateDefaultSplitVisibility(); $("invoiceDefaultsDialog").showModal();
+}
+
+async function saveInvoiceDefaults(event) {
+  event.preventDefault();
+  try {
+    const result = await api("/api/admin/invoice-defaults", { method: "PUT", body: {
+      category_id: $("defaultInvoiceCategory").value, payer_member_id: $("defaultInvoicePayer").value,
+      funding_source_id: $("defaultInvoiceSource").value, burden_type: $("defaultInvoiceBurden").value,
+      split_member_ids: simpleMemberIds("defaultSplitMembers"), batch_note: $("defaultBatchNote").value,
+      burden_labels: { team_aa: $("burdenLabelTeam").value, specified_split: $("burdenLabelSpecified").value, self_paid: $("burdenLabelSelf").value },
+    } });
+    state.settings.invoice_defaults = result.defaults; renderReferenceOptions(); $("invoiceDefaultsDialog").close(); toast("录入与批量导入默认值已保存");
+  } catch (error) { toast(error.message, "error", 6000); }
 }
 
 const routes = {
@@ -695,6 +745,71 @@ function renderInvoices() {
   renderInvoiceSelection();
 }
 
+function previewKind(item) {
+  const mime = String(item?.mime || "").toLowerCase(), name = String(item?.name || "").toLowerCase();
+  if (mime.startsWith("image/") || /\.(png|jpe?g|gif|bmp|webp|tiff?)$/.test(name)) return "image";
+  if (mime === "application/pdf" || name.endsWith(".pdf")) return "pdf";
+  if (mime.startsWith("text/") || name.endsWith(".txt")) return "text";
+  if (name.endsWith(".zip")) return "zip";
+  if (name.endsWith(".ofd")) return "ofd";
+  return "file";
+}
+
+function previewThumb(item) {
+  const kind = previewKind(item);
+  if (kind === "image") return `<span class="attachment-thumb"><img src="${escapeHtml(item.url)}" alt="${escapeHtml(item.name)}"></span>`;
+  if (kind === "pdf") return `<span class="attachment-thumb"><iframe src="${escapeHtml(item.url)}#toolbar=0&navpanes=0&view=FitH" title="${escapeHtml(item.name)}"></iframe></span>`;
+  return `<span class="attachment-thumb">${escapeHtml(kind.toUpperCase())}</span>`;
+}
+
+function setCurrentInvoicePreview(item) {
+  if (state.currentInvoicePreview?.revoke) URL.revokeObjectURL(state.currentInvoicePreview.url);
+  state.currentInvoicePreview = item || null;
+  if (!item) { $("invoiceAttachmentPreview").innerHTML = ""; $("invoiceAttachmentPreview").classList.add("hidden"); return; }
+  $("invoiceAttachmentPreview").innerHTML = `<button type="button" class="attachment-preview-card" data-open-current-preview>${previewThumb(item)}<span><b>${escapeHtml(item.name || "发票附件")}</b><small>点击放大、缩小或打开原文件<br>${escapeHtml((item.mime || "文件").replace("application/", ""))}</small></span></button>`;
+  $("invoiceAttachmentPreview").classList.remove("hidden");
+}
+
+function clearBatchPreviews() {
+  state.batchPreviewFiles.forEach((item) => { if (item.revoke) URL.revokeObjectURL(item.url); });
+  state.batchPreviewFiles = [];
+}
+
+function renderBatchPreviews(files) {
+  clearBatchPreviews();
+  state.batchPreviewFiles = [...(files || [])].map((file) => ({ name: file.name, mime: file.type, url: URL.createObjectURL(file), revoke: true }));
+  $("batchFilePreview").innerHTML = state.batchPreviewFiles.map((item, index) => `<button type="button" class="batch-file-card" data-batch-preview="${index}">${previewThumb(item)}<span><b>${escapeHtml(item.name)}</b><small>${escapeHtml(previewKind(item).toUpperCase())}</small></span></button>`).join("") || `<div class="empty-state">选择文件后将在这里显示缩略图，点击可放大查看原文件。</div>`;
+}
+
+function applyAttachmentZoom(value) {
+  state.attachmentViewerZoom = Math.max(.35, Math.min(3, Number(value || 1)));
+  const content = $("attachmentViewerCanvas").firstElementChild;
+  if (content) content.style.transform = `scale(${state.attachmentViewerZoom})`;
+  $("attachmentZoomValue").textContent = `${Math.round(state.attachmentViewerZoom * 100)}%`;
+}
+
+function openAttachmentViewer(item) {
+  if (!item?.url) return toast("该附件暂时无法预览", "error");
+  const kind = previewKind(item), canvas = $("attachmentViewerCanvas");
+  $("attachmentViewerTitle").textContent = item.name || "查看原文件";
+  $("attachmentOpenOriginal").href = item.url;
+  if (kind === "image") canvas.innerHTML = `<img class="attachment-viewer-content image" src="${escapeHtml(item.url)}" alt="${escapeHtml(item.name)}">`;
+  else if (["pdf", "text"].includes(kind)) canvas.innerHTML = `<iframe class="attachment-viewer-content frame" src="${escapeHtml(item.url)}" title="${escapeHtml(item.name)}"></iframe>`;
+  else canvas.innerHTML = `<div class="empty-state attachment-viewer-content">该格式不能在窗口内直接显示，请点击“打开原文件”。</div>`;
+  applyAttachmentZoom(1); $("attachmentViewerDialog").showModal();
+}
+
+async function saveBlob(blob, suggestedName, pickerTypes = []) {
+  if (window.showSaveFilePicker) {
+    try {
+      const handle = await window.showSaveFilePicker({ suggestedName, types: pickerTypes });
+      const writable = await handle.createWritable(); await writable.write(blob); await writable.close(); return true;
+    } catch (error) { if (error?.name === "AbortError") return false; }
+  }
+  const url = URL.createObjectURL(blob), link = document.createElement("a");
+  link.href = url; link.download = suggestedName; link.style.display = "none"; document.body.appendChild(link); link.click(); link.remove(); setTimeout(() => URL.revokeObjectURL(url), 30000); return true;
+}
+
 async function downloadCsv(ids = []) {
   if (ids.length === 0 && state.invoices.length === 0) return toast("当前没有可导出的发票", "error");
   const suggestedName = `燕翔车队发票_${nowDate()}.csv`;
@@ -737,6 +852,69 @@ async function downloadCsv(ids = []) {
   finally { loading(false); }
 }
 
+function openPdfExportDialog() {
+  const selected = selectedInvoices(), items = selected.length ? selected : state.invoices;
+  if (!items.length) return toast("当前没有可导出的发票", "error");
+  const scope = selected.length ? `已勾选 ${selected.length} 张发票` : `当前筛选结果 ${items.length} 张发票`;
+  $("pdfExportSummary").textContent = `${scope}，合计 ${money(items.reduce((sum, item) => sum + Number(item.total_amount || 0), 0))}。没有原附件的记录会在完成提示中列为跳过。`;
+  $("pdfExportDialog").showModal();
+}
+
+async function downloadPdfExport(event) {
+  event.preventDefault();
+  const mode = document.querySelector('input[name="pdfExportMode"]:checked')?.value || "separate";
+  const extension = mode === "merged" ? ".pdf" : ".zip";
+  const suggestedName = `燕翔车队发票_${mode === "merged" ? "合并" : "逐张"}_${nowDate()}${extension}`;
+  let fileHandle = null;
+  if (window.showSaveFilePicker) {
+    try { fileHandle = await window.showSaveFilePicker({ suggestedName, types: [{ description: mode === "merged" ? "PDF 文件" : "ZIP 压缩包", accept: { [mode === "merged" ? "application/pdf" : "application/zip"]: [extension] } }] }); }
+    catch (error) { if (error?.name === "AbortError") return; }
+  }
+  const ids = [...state.selectedInvoiceIds];
+  const body = { mode, ...(ids.length ? { ids } : Object.fromEntries(invoiceFilterParams())) };
+  $("pdfExportDialog").close(); loading(true, "正在保持原画质生成 PDF", 4, ids.length ? `处理已选择的 ${ids.length} 张发票` : `处理当前筛选的 ${state.invoices.length} 张发票`, true);
+  try {
+    const response = await fetch("/api/export/pdf", { method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json", "X-CSRF-Token": state.csrf }, body: JSON.stringify(body) });
+    if (!response.ok) { const detail = await response.json().catch(() => ({})); throw new Error(detail.detail || `PDF 导出失败 (${response.status})`); }
+    setLoadingProgress(90, "正在写入导出文件"); const blob = await response.blob();
+    if (fileHandle) { const writable = await fileHandle.createWritable(); await writable.write(blob); await writable.close(); }
+    else await saveBlob(blob, suggestedName);
+    const count = Number(response.headers.get("X-Export-Count") || 0), skipped = Number(response.headers.get("X-Export-Skipped") || 0), total = Number(response.headers.get("X-Export-Total") || 0);
+    toast(`PDF 导出成功：${count} 张，合计 ${money(total)}${skipped ? `；跳过 ${skipped} 张` : ""}`, skipped ? "error" : "success", 7500);
+  } catch (error) { toast(error.message, "error", 7000); }
+  finally { loading(false); }
+}
+
+async function downloadBackup() {
+  const suggestedName = `燕翔车队经费完整备份_${nowDate()}.zip`;
+  let fileHandle = null;
+  if (window.showSaveFilePicker) {
+    try { fileHandle = await window.showSaveFilePicker({ suggestedName, types: [{ description: "完整备份 ZIP", accept: { "application/zip": [".zip"] } }] }); }
+    catch (error) { if (error?.name === "AbortError") return; }
+  }
+  if (!fileHandle && window.pywebview?.api?.choose_backup_path) {
+    try {
+      const targetPath = await window.pywebview.api.choose_backup_path(suggestedName);
+      if (!targetPath) return;
+      loading(true, "正在打包数据库和全部附件", 3, "备份过程不会修改现有数据", true);
+      const result = await api("/api/admin/backup/save", { method: "POST", body: { target_path: targetPath } });
+      toast(`完整备份已保存：${(Number(result.size || 0) / 1024 / 1024).toFixed(1)} MB`, "success", 6500);
+    } catch (error) { toast(error.message, "error", 7000); }
+    finally { loading(false); }
+    return;
+  }
+  loading(true, "正在打包数据库和全部附件", 3, "备份过程不会修改现有数据", true);
+  try {
+    const response = await fetch("/api/admin/backup", { credentials: "same-origin" });
+    if (!response.ok) { const detail = await response.json().catch(() => ({})); throw new Error(detail.detail || `备份生成失败 (${response.status})`); }
+    setLoadingProgress(88, "正在写入完整备份"); const blob = await response.blob();
+    if (fileHandle) { const writable = await fileHandle.createWritable(); await writable.write(blob); await writable.close(); }
+    else await saveBlob(blob, suggestedName);
+    toast(`完整备份已保存：${(blob.size / 1024 / 1024).toFixed(1)} MB`, "success", 6500);
+  } catch (error) { toast(error.message, "error", 7000); }
+  finally { loading(false); }
+}
+
 function renderSplitMembers(selected = [], weights = {}) {
   const burden = document.querySelector('input[name="burdenType"]:checked')?.value || "team_aa";
   const payer = $("invoicePayer").value;
@@ -759,13 +937,17 @@ function resetInvoiceForm() {
   $("invoiceForm").reset(); $("invoiceId").value = ""; $("invoiceVersion").value = ""; $("attachmentId").value = "";
   $("ocrText").value = ""; $("ocrConfidence").value = "0"; $("ocrStatus").value = "manual"; $("invoiceDate").value = nowDate();
   $("invoiceTax").value = "0"; $("reimbursedAmount").value = "0"; $("invoiceProduct").value = "其他";
-  const preferredPayer = state.user.member_id && state.members.some((item) => item.id === state.user.member_id && item.active) ? state.user.member_id : state.members.find((item) => item.active)?.id;
+  const defaults = state.settings.invoice_defaults || {};
+  const preferredPayer = activeMembers().some((item) => item.id === defaults.payer_member_id) ? defaults.payer_member_id : (state.user.member_id && state.members.some((item) => item.id === state.user.member_id && item.active) ? state.user.member_id : state.members.find((item) => item.active)?.id);
   $("invoicePayer").value = preferredPayer || ""; $("fileState").textContent = "尚未选择附件"; $("runOcrBtn").disabled = true;
   $("ocrMessage").textContent = "电子 PDF 将优先直接读取文字"; $("ocrProgressBar").style.width = "0";
   $("classificationHint").textContent = ""; $("classificationHint").classList.add("hidden");
   $("invoiceMetadata").textContent = ""; $("invoiceMetadata").classList.add("hidden");
-  document.querySelector('input[name="burdenType"][value="team_aa"]').checked = true; $("splitMode").value = "equal";
-  renderSplitMembers(state.members.filter((item) => item.active).map((item) => item.id)); updateReimbursementStatus();
+  $("invoiceCategory").value = defaults.category_id || ""; $("invoiceSource").value = defaults.funding_source_id || "";
+  const defaultBurden = ["team_aa", "specified_split", "self_paid"].includes(defaults.burden_type) ? defaults.burden_type : "team_aa";
+  document.querySelector(`input[name="burdenType"][value="${defaultBurden}"]`).checked = true; $("splitMode").value = "equal";
+  const defaultSplits = defaultBurden === "specified_split" ? (defaults.split_member_ids || []) : activeMembers().map((item) => item.id);
+  renderSplitMembers(defaultSplits); setCurrentInvoicePreview(null); updateReimbursementStatus();
   $("invoiceDialogTitle").textContent = "新增发票记录"; setInvoiceReadonly(false);
 }
 
@@ -790,6 +972,7 @@ async function openInvoice(id, readonly = false) {
   const weights = Object.fromEntries(item.splits.map((split) => [split.member_id, Math.max(.01, split.share_amount)]));
   renderSplitMembers(item.splits.map((split) => split.member_id), weights);
   if (item.attachment_id) { $("fileState").textContent = item.attachment_name || "已关联附件"; $("runOcrBtn").disabled = false; }
+  if (item.attachment_id) setCurrentInvoicePreview({ name: item.attachment_name || "发票附件", mime: item.attachment_mime || "", url: `/api/attachments/${encodeURIComponent(item.attachment_id)}/content?inline=1` });
   $("invoiceMetadata").innerHTML = `<span><b>开票日期</b>${escapeHtml(dateText(item.invoice_date))}</span><span><b>上传日期</b>${escapeHtml(dateText(item.uploaded_at || item.created_at))}</span><span><b>提交人</b>${escapeHtml(item.created_by_name || "系统任务")}${item.created_by_username ? `（${escapeHtml(item.created_by_username)}）` : ""}</span>`;
   $("invoiceMetadata").classList.remove("hidden");
   $("invoiceDialogTitle").textContent = readonly ? "查看发票记录" : "编辑发票记录"; updateReimbursementStatus(); setInvoiceReadonly(readonly); $("invoiceDialog").showModal();
@@ -823,6 +1006,7 @@ async function uploadInvoiceFile(file) {
   try {
     const data = await api("/api/attachments", { method: "POST", body: form });
     $("attachmentId").value = data.attachment.id; $("fileState").textContent = data.attachment.original_name;
+    setCurrentInvoicePreview({ name: data.attachment.original_name, mime: data.attachment.mime_type || file.type, url: `/api/attachments/${encodeURIComponent(data.attachment.id)}/content?inline=1` });
     $("runOcrBtn").disabled = false; $("ocrProgressBar").style.width = "28%"; toast("附件已安全保存");
     await runOcr();
   } catch (error) { $("fileState").textContent = "附件上传失败"; toast(error.message, "error"); }
@@ -928,6 +1112,18 @@ async function deleteSelectedInvoices() {
   finally { loading(false); }
 }
 
+function openBatchImport() {
+  $("batchForm").reset(); $("batchResult").textContent = ""; clearBatchPreviews();
+  $("batchFilePreview").innerHTML = `<div class="empty-state">选择文件后将在这里显示缩略图，点击可放大查看原文件。</div>`;
+  renderReferenceOptions();
+  const defaults = state.settings.invoice_defaults || {};
+  $("batchCategory").value = defaults.category_id || "";
+  $("batchPayer").value = activeMembers().some((item) => item.id === defaults.payer_member_id) ? defaults.payer_member_id : (state.user.member_id || activeMembers()[0]?.id || "");
+  $("batchSource").value = defaults.funding_source_id || ""; $("batchBurden").value = defaults.burden_type || "team_aa"; $("batchNote").value = defaults.batch_note || "";
+  renderSimpleMemberPicker("batchSplitMembers", defaults.split_member_ids?.length ? defaults.split_member_ids : activeMembers().map((item) => item.id));
+  updateBatchSplitVisibility(); $("batchDialog").showModal();
+}
+
 async function submitBatch(event) {
   event.preventDefault(); const files = [...$("batchFile").files]; if (!files.length) return;
   const zipFiles = files.filter((file) => file.name.toLowerCase().endsWith(".zip"));
@@ -936,7 +1132,9 @@ async function submitBatch(event) {
   if (zipFiles.length) form.append("file", zipFiles[0]); else files.forEach((file) => form.append("files", file));
   form.append("category_id", $("batchCategory").value); form.append("payer_member_id", $("batchPayer").value);
   form.append("funding_source_id", $("batchSource").value); form.append("burden_type", $("batchBurden").value); form.append("note", $("batchNote").value);
-  form.append("split_member_ids", JSON.stringify(state.members.filter((item) => item.active).map((item) => item.id)));
+  const splitIds = $("batchBurden").value === "specified_split" ? simpleMemberIds("batchSplitMembers") : activeMembers().map((item) => item.id);
+  if ($("batchBurden").value === "specified_split" && !splitIds.length) return toast("指定成员均摊时，请至少勾选一名成员", "error");
+  form.append("split_member_ids", JSON.stringify(splitIds));
   loading(true, "正在上传发票文件", 1, `已选择 ${files.length} 个文件`, false);
   let completed = false;
   try {
@@ -1497,7 +1695,6 @@ async function openUpdateDialog() {
 }
 
 async function installLatestUpdate() {
-  if (!isAdmin()) return toast("只有管理员可以安装软件更新", "error");
   if (!state.updateRelease?.available) { const result = await checkForUpdates(true); if (!result?.available) return; }
   loading(true, "正在下载最新版", 1, "数据目录不会被替换", false);
   try {
@@ -1526,7 +1723,7 @@ function scheduleAutomaticUpdateCheck() {
   try { localStorage.setItem(LAST_UPDATE_CHECK_KEY, String(Date.now())); } catch (_) { /* 仍允许本次检查 */ }
   setTimeout(async () => {
     const result = await checkForUpdates(false);
-    if (result?.available && isAdmin()) toast(`发现最新版 V${result.latest_version}，请到“系统设置 → 版本与更新”一键安装`, "success", 8000);
+    if (result?.available) toast(`发现最新版 V${result.latest_version}，请到“系统设置 → 版本与更新”一键安装`, "success", 8000);
   }, 1800);
 }
 
@@ -1573,15 +1770,20 @@ function setupEvents() {
   $("invoiceTable").addEventListener("change", (event) => { const input = event.target.closest(".invoice-select"); if (!input) return; if (input.checked) state.selectedInvoiceIds.add(input.dataset.id); else state.selectedInvoiceIds.delete(input.dataset.id); renderInvoiceSelection(); });
   $("selectAllInvoices").addEventListener("change", (event) => { state.invoices.forEach((item) => event.target.checked ? state.selectedInvoiceIds.add(item.id) : state.selectedInvoiceIds.delete(item.id)); $$("#invoiceTable .invoice-select").forEach((input) => { input.checked = event.target.checked; }); renderInvoiceSelection(); });
   $("exportCsvBtn").addEventListener("click", () => downloadCsv()); $("batchExportSelectedBtn").addEventListener("click", () => downloadCsv([...state.selectedInvoiceIds]));
+  $("exportPdfBtn").addEventListener("click", openPdfExportDialog); $("pdfExportForm").addEventListener("submit", downloadPdfExport);
   $("batchClearSelectionBtn").addEventListener("click", () => clearInvoiceSelection()); $("batchEditSelectedBtn").addEventListener("click", openBatchActionDialog); $("batchDeleteSelectedBtn").addEventListener("click", deleteSelectedInvoices);
   $("batchActionForm").addEventListener("submit", submitBatchAction); $("batchActionType").addEventListener("change", updateBatchActionVisibility); $("batchActionStatus").addEventListener("change", updateBatchActionVisibility); $("batchActionRatio").addEventListener("input", updateBatchActionVisibility);
   $("invoiceForm").addEventListener("submit", saveInvoiceForm); $("invoiceFile").addEventListener("change", (event) => uploadInvoiceFile(event.target.files[0])); $("runOcrBtn").addEventListener("click", runOcr);
+  $("invoiceAttachmentPreview").addEventListener("click", (event) => { if (event.target.closest("[data-open-current-preview]")) openAttachmentViewer(state.currentInvoicePreview); });
+  $("attachmentZoomOut").addEventListener("click", () => applyAttachmentZoom(state.attachmentViewerZoom - .15)); $("attachmentZoomIn").addEventListener("click", () => applyAttachmentZoom(state.attachmentViewerZoom + .15)); $("attachmentZoomReset").addEventListener("click", () => applyAttachmentZoom(1));
   $("invoiceAmount").addEventListener("input", updateReimbursementStatus); $("reimbursedAmount").addEventListener("input", updateReimbursementStatus);
   $("invoicePayer").addEventListener("change", () => renderSplitMembers(selectedSplitIds(), selectedWeights()));
   $$('input[name="burdenType"]').forEach((input) => input.addEventListener("change", () => renderSplitMembers(selectedSplitIds(), selectedWeights())));
   $("splitMode").addEventListener("change", () => renderSplitMembers(selectedSplitIds(), selectedWeights()));
   $("splitMemberPicker").addEventListener("change", (event) => { if (event.target.type === "checkbox") { const weight = event.target.closest(".split-member").querySelector(".split-weight"); weight.disabled = $("splitMode").value !== "weighted" || !event.target.checked; } });
-  $("batchImportBtn").addEventListener("click", () => { $("batchForm").reset(); $("batchResult").textContent = ""; renderReferenceOptions(); $("batchDialog").showModal(); }); $("batchForm").addEventListener("submit", submitBatch);
+  $("batchImportBtn").addEventListener("click", openBatchImport); $("batchForm").addEventListener("submit", submitBatch);
+  $("batchFile").addEventListener("change", (event) => renderBatchPreviews(event.target.files)); $("batchBurden").addEventListener("change", updateBatchSplitVisibility);
+  $("batchFilePreview").addEventListener("click", (event) => { const button = event.target.closest("[data-batch-preview]"); if (button) openAttachmentViewer(state.batchPreviewFiles[Number(button.dataset.batchPreview)]); });
   $("recordSettlementBtn").addEventListener("click", () => openSettlement()); $("settlementForm").addEventListener("submit", saveSettlement);
   $("transferRecommendations").addEventListener("click", (event) => { const button = event.target.closest("[data-transfer-from]"); if (button) openSettlement(button.dataset.transferFrom, button.dataset.transferTo, button.dataset.transferAmount); });
   $("settlementHistory").addEventListener("click", (event) => { const button = event.target.closest("[data-settlement-delete]"); if (button) deleteSettlement(button.dataset.settlementDelete); });
@@ -1603,10 +1805,12 @@ function setupEvents() {
   $("creatorCards").addEventListener("click", (event) => { const button = event.target.closest("[data-creator-edit]"); if (button) openCreator(state.creators.find((item) => item.id === button.dataset.creatorEdit)).catch((error) => toast(error.message, "error")); });
   $("createSnapshotBtn").addEventListener("click", createSnapshotManually); $("snapshotList").addEventListener("click", (event) => { const button = event.target.closest("[data-snapshot-restore]"); if (button) restoreSnapshot(button.dataset.snapshotRestore); });
   $("openReferencesBtn").addEventListener("click", openReferences); $("categoryForm").addEventListener("submit", saveCategory); $("sourceForm").addEventListener("submit", saveSource);
+  $("openInvoiceDefaultsBtn").addEventListener("click", openInvoiceDefaults); $("invoiceDefaultsForm").addEventListener("submit", saveInvoiceDefaults); $("defaultInvoiceBurden").addEventListener("change", updateDefaultSplitVisibility);
   $("resetCategoryBtn").addEventListener("click", resetCategoryEditor); $("resetSourceBtn").addEventListener("click", resetSourceEditor);
   $("categoryManagerList").addEventListener("click", (event) => { const button = event.target.closest("[data-category-edit]"); if (button) editCategory(state.categories.find((item) => item.id === button.dataset.categoryEdit)); });
   $("sourceManagerList").addEventListener("click", (event) => { const button = event.target.closest("[data-source-edit]"); if (button) editSource(state.fundingSources.find((item) => item.id === button.dataset.sourceEdit)); });
   $("openAppearanceBtn").addEventListener("click", openAppearance); $("appearanceForm").addEventListener("submit", saveAppearance); $("backgroundOverlay").addEventListener("input", () => $("overlayValue").textContent = `${$("backgroundOverlay").value}%`);
+  $("appearanceDialog").addEventListener("click", (event) => { const preset = event.target.closest("[data-overlay-preset]"); if (!preset) return; $("backgroundOverlay").value = preset.dataset.overlayPreset; $("overlayValue").textContent = `${preset.dataset.overlayPreset}%`; document.documentElement.style.setProperty("--background-overlay", String(Number(preset.dataset.overlayPreset) / 100)); });
   $("backgroundFile").addEventListener("change", (event) => chooseBackgroundFile(event.target.files[0])); $("loginMediaFiles").addEventListener("change", (event) => addLoginMediaFiles(event.target.files));
   $("loadingCarFiles").addEventListener("change", (event) => addLoadingCarFiles(event.target.files)); $("resetLoadingCarsBtn").addEventListener("click", resetLoadingCars);
   $("loadingCarEditor").addEventListener("click", (event) => { const remove = event.target.closest("[data-loading-car-remove]"); if (!remove) return; state.appearanceLoadingCars.splice(Number(remove.dataset.loadingCarRemove), 1); if (!state.appearanceLoadingCars.length) state.appearanceLoadingCars = DEFAULT_LOADING_CARS.map((item) => ({ ...item })); renderLoadingCarEditor(); });
@@ -1617,7 +1821,7 @@ function setupEvents() {
   $("openClassificationBtn").addEventListener("click", openClassification); $("classificationRuleForm").addEventListener("submit", saveClassificationRule); $("newRuleBtn").addEventListener("click", resetClassificationEditor); $("resetRulesBtn").addEventListener("click", resetClassificationRules);
   $("classificationRuleList").addEventListener("click", (event) => { const edit = event.target.closest("[data-rule-edit]"), remove = event.target.closest("[data-rule-delete]"); if (edit) editClassificationRule(edit.dataset.ruleEdit); if (remove) deleteClassificationRule(remove.dataset.ruleDelete); });
   $("openSyncBtn").addEventListener("click", openSync); $("syncForm").addEventListener("submit", saveSync); $("syncNowBtn").addEventListener("click", syncNow);
-  $("restoreBackupInput").addEventListener("change", (event) => restoreBackup(event.target.files[0])); $("deleteDemoBtn").addEventListener("click", deleteDemo);
+  $("downloadBackupBtn").addEventListener("click", downloadBackup); $("restoreBackupInput").addEventListener("change", (event) => restoreBackup(event.target.files[0])); $("deleteDemoBtn").addEventListener("click", deleteDemo);
   $("openUpdateBtn").addEventListener("click", openUpdateDialog); $("checkUpdateBtn").addEventListener("click", () => checkForUpdates(true)); $("installUpdateBtn").addEventListener("click", installLatestUpdate);
   $("autoUpdateCheck").addEventListener("change", (event) => { try { localStorage.setItem(AUTO_UPDATE_STORAGE_KEY, event.target.checked ? "1" : "0"); } catch (_) { /* 当前会话仍可使用 */ } toast(event.target.checked ? "已启用每日自动检查更新" : "已关闭启动后自动检查"); });
   $$('[data-close]').forEach((button) => button.addEventListener("click", () => $(button.dataset.close).close()));

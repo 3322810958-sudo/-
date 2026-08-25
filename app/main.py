@@ -12,6 +12,7 @@ import sqlite3
 import tempfile
 import threading
 import zipfile
+from urllib.parse import quote
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
@@ -56,6 +57,7 @@ from .config import (
     APP_DIR,
     APP_MODE,
     DB_PATH,
+    RUNTIME_HOME,
     SUPPORTED_EXTENSIONS,
     SYNC_INTERVAL_SECONDS,
     TMP_DIR,
@@ -88,7 +90,7 @@ from .updater import check_for_update, get_update_job, schedule_update_install, 
 from .wallpaper_engine import scan_wallpapers, wallpaper_item
 
 
-STATIC_DIR = APP_DIR / "static"
+STATIC_DIR = RUNTIME_HOME / "web" if (RUNTIME_HOME / "web" / "index.html").is_file() else APP_DIR / "static"
 STOP_EVENT = threading.Event()
 APPEARANCE_SETTING_KEYS = (
     "team_name", "background_image", "background_media_id", "background_media_kind",
@@ -157,12 +159,13 @@ app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 async def security_headers(request: Request, call_next):
     response = await call_next(request)
     response.headers["X-Content-Type-Options"] = "nosniff"
-    response.headers["X-Frame-Options"] = "DENY"
+    inline_attachment = request.url.path.startswith("/api/attachments/") and request.query_params.get("inline") == "1"
+    response.headers["X-Frame-Options"] = "SAMEORIGIN" if inline_attachment else "DENY"
     response.headers["Referrer-Policy"] = "same-origin"
     response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
     response.headers["Content-Security-Policy"] = (
         "default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; "
-        "script-src 'self'; connect-src 'self' ws: wss:; font-src 'self'; object-src 'none'; base-uri 'self'"
+        "script-src 'self'; connect-src 'self' ws: wss:; font-src 'self'; frame-src 'self' blob:; object-src 'none'; base-uri 'self'"
     )
     if request.url.path.startswith("/api/"):
         response.headers["Cache-Control"] = "no-store"
@@ -197,7 +200,6 @@ async def update_check(request: Request) -> dict[str, Any]:
 async def update_download(request: Request) -> dict[str, Any]:
     auth = get_auth(request)
     require_csrf(request, auth)
-    require_admin(auth)
     try:
         return await asyncio.to_thread(start_update_download, auth.user["id"])
     except RuntimeError as exc:
@@ -207,7 +209,6 @@ async def update_download(request: Request) -> dict[str, Any]:
 @app.get("/api/admin/update/jobs/{job_id}")
 async def update_job_status(job_id: str, request: Request) -> dict[str, Any]:
     auth = get_auth(request)
-    require_admin(auth)
     job = get_update_job(job_id)
     if not job or job.get("created_by") != auth.user["id"]:
         raise HTTPException(status_code=404, detail="更新任务不存在")
@@ -218,7 +219,6 @@ async def update_job_status(job_id: str, request: Request) -> dict[str, Any]:
 async def update_install(job_id: str, request: Request) -> dict[str, Any]:
     auth = get_auth(request)
     require_csrf(request, auth)
-    require_admin(auth)
     try:
         return schedule_update_install(job_id, auth.user["id"])
     except RuntimeError as exc:
@@ -314,6 +314,44 @@ def _appearance_settings(conn: sqlite3.Connection) -> dict[str, Any]:
     return values
 
 
+def _invoice_defaults(conn: sqlite3.Connection) -> dict[str, Any]:
+    defaults: dict[str, Any] = {
+        "category_id": "",
+        "payer_member_id": "",
+        "funding_source_id": "",
+        "burden_type": "team_aa",
+        "split_member_ids": [],
+        "batch_note": "",
+        "burden_labels": {
+            "team_aa": "全队 AA",
+            "specified_split": "指定成员",
+            "self_paid": "个人承担",
+        },
+    }
+    try:
+        saved = json.loads(setting(conn, "invoice_defaults", "{}"))
+    except json.JSONDecodeError:
+        saved = {}
+    if not isinstance(saved, dict):
+        return defaults
+    for key in ("category_id", "payer_member_id", "funding_source_id", "batch_note"):
+        if key in saved:
+            defaults[key] = str(saved.get(key) or "")
+    burden = str(saved.get("burden_type") or "")
+    if burden in {"team_aa", "specified_split", "self_paid"}:
+        defaults["burden_type"] = burden
+    split_ids = saved.get("split_member_ids")
+    if isinstance(split_ids, list):
+        defaults["split_member_ids"] = [str(value) for value in split_ids]
+    labels = saved.get("burden_labels")
+    if isinstance(labels, dict):
+        for key in defaults["burden_labels"]:
+            value = str(labels.get(key) or "").strip()
+            if value:
+                defaults["burden_labels"][key] = value[:30]
+    return defaults
+
+
 def _configured_public_media_ids(conn: sqlite3.Connection) -> set[str]:
     settings = _appearance_settings(conn)
     ids = {str(settings.get("background_media_id") or "")}
@@ -401,6 +439,7 @@ def _reference_data(conn: sqlite3.Connection) -> dict[str, Any]:
         ORDER BY c.sort_order,c.department,c.name""", (season["id"],)
     ).fetchall()]
     settings = _appearance_settings(conn)
+    settings["invoice_defaults"] = _invoice_defaults(conn)
     return {
         "members": members, "categories": categories, "funding_sources": sources,
         "departments": departments, "creators": creators, "season": season, "settings": settings,
@@ -1160,7 +1199,7 @@ async def attachment_upload(request: Request, file: UploadFile = File(...)) -> d
 
 
 @app.get("/api/attachments/{attachment_id}/content")
-async def attachment_content(attachment_id: str, request: Request) -> FileResponse:
+async def attachment_content(attachment_id: str, request: Request, inline: bool = False) -> FileResponse:
     get_auth(request)
     with connect() as conn:
         row = conn.execute("SELECT * FROM attachments WHERE id=? AND deleted_at IS NULL", (attachment_id,)).fetchone()
@@ -1171,6 +1210,13 @@ async def attachment_content(attachment_id: str, request: Request) -> FileRespon
     path = attachment_path(row["stored_name"])
     if not path.exists():
         raise HTTPException(status_code=404, detail="附件文件尚未同步到本机")
+    if inline:
+        safe_name = quote(str(row["original_name"]), safe="")
+        return FileResponse(
+            path,
+            media_type=row["mime_type"],
+            headers={"Content-Disposition": f"inline; filename*=UTF-8''{safe_name}"},
+        )
     return FileResponse(path, media_type=row["mime_type"], filename=row["original_name"])
 
 
@@ -1523,6 +1569,56 @@ async def settings_update(payload: dict[str, Any], request: Request) -> dict[str
     return {"ok": True, "settings": settings}
 
 
+@app.put("/api/admin/invoice-defaults")
+async def invoice_defaults_update(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    auth = get_auth(request)
+    require_csrf(request, auth)
+    require_admin(auth)
+    with transaction() as conn:
+        season_id = current_season_id(conn)
+        category_id = str(payload.get("category_id") or "")
+        source_id = str(payload.get("funding_source_id") or "")
+        payer_id = str(payload.get("payer_member_id") or "")
+        if category_id and not conn.execute(
+            "SELECT 1 FROM categories WHERE id=? AND active=1 AND deleted_at IS NULL", (category_id,)
+        ).fetchone():
+            raise HTTPException(status_code=400, detail="默认费用分类不存在或已停用")
+        if source_id and not conn.execute(
+            "SELECT 1 FROM funding_sources WHERE id=? AND active=1 AND deleted_at IS NULL", (source_id,)
+        ).fetchone():
+            raise HTTPException(status_code=400, detail="默认资金来源不存在或已停用")
+        active_members = {str(row[0]) for row in conn.execute(
+            "SELECT id FROM members WHERE season_id=? AND active=1 AND deleted_at IS NULL", (season_id,)
+        ).fetchall()}
+        if payer_id and payer_id not in active_members:
+            raise HTTPException(status_code=400, detail="默认垫付成员不属于当前赛季")
+        burden = str(payload.get("burden_type") or "team_aa")
+        if burden not in {"team_aa", "specified_split", "self_paid"}:
+            raise HTTPException(status_code=400, detail="默认承担方式不正确")
+        raw_split_ids = payload.get("split_member_ids")
+        split_ids = [str(value) for value in raw_split_ids] if isinstance(raw_split_ids, list) else []
+        split_ids = [value for value in dict.fromkeys(split_ids) if value in active_members]
+        labels = payload.get("burden_labels") if isinstance(payload.get("burden_labels"), dict) else {}
+        defaults = {
+            "category_id": category_id,
+            "payer_member_id": payer_id,
+            "funding_source_id": source_id,
+            "burden_type": burden,
+            "split_member_ids": split_ids,
+            "batch_note": str(payload.get("batch_note") or "")[:500],
+            "burden_labels": {
+                "team_aa": str(labels.get("team_aa") or "全队 AA").strip()[:30] or "全队 AA",
+                "specified_split": str(labels.get("specified_split") or "指定成员").strip()[:30] or "指定成员",
+                "self_paid": str(labels.get("self_paid") or "个人承担").strip()[:30] or "个人承担",
+            },
+        }
+        create_snapshot(conn, auth.user["id"], "录入默认值修改前", "发票录入与批量导入")
+        set_setting(conn, "invoice_defaults", json.dumps(defaults, ensure_ascii=False, separators=(",", ":")))
+        audit(conn, auth.user["id"], "update", "invoice_defaults", None, defaults)
+    await hub.notify("invoice_defaults_changed")
+    return {"ok": True, "defaults": defaults}
+
+
 @app.post("/api/admin/settings/background")
 async def settings_background(request: Request, file: UploadFile = File(...)) -> dict[str, Any]:
     auth = get_auth(request)
@@ -1723,18 +1819,18 @@ async def report_summary(request: Request, date_from: str = "", date_to: str = "
 def _csv_export_response(invoices: list[dict[str, Any]]) -> StreamingResponse:
     output = io.StringIO()
     writer = csv.writer(output)
-    writer.writerow(["开票日期", "上传日期", "提交人", "提交账号", "发票号码", "销售方", "总金额", "税额", "分类", "产品类型", "垫付人", "承担方式", "报销状态", "已报销金额", "报销日期", "资金来源", "参与成员", "备注"])
+    writer.writerow(["发票号码", "总金额", "分类", "承担方式", "资金来源", "成员"])
     burden_labels = {"team_aa": "全队AA", "self_paid": "个人承担", "specified_split": "指定成员分摊"}
-    status_labels = {"pending": "未报销", "partial": "部分报销", "reimbursed": "已报销"}
     for item in invoices:
+        splits = "、".join(
+            f"{split['member_name']}（{float(split.get('share_amount') or 0):.2f}元）"
+            for split in item.get("splits", [])
+        )
+        members = f"垫付：{item.get('payer_name') or '未设置'}；分摊：{splits or '未设置'}"
         writer.writerow([
-            item["invoice_date"], str(item.get("uploaded_at") or item.get("created_at") or "").replace("T", " ")[:19],
-            item.get("created_by_name") or "系统任务", item.get("created_by_username") or "",
-            item["invoice_no"], item["vendor"], f"{item['total_amount']:.2f}", f"{item['tax_amount']:.2f}",
-            item.get("category_name") or "", item["product_type"], item.get("payer_name") or "",
-            burden_labels.get(item["burden_type"], item["burden_type"]), status_labels.get(item["reimbursement_status"], item["reimbursement_status"]),
-            f"{item['reimbursed_amount']:.2f}", item.get("reimbursement_date") or "", item.get("funding_source_name") or "",
-            "、".join(split["member_name"] for split in item["splits"]), item["note"],
+            item["invoice_no"], f"{item['total_amount']:.2f}", item.get("category_name") or "未分类",
+            burden_labels.get(item["burden_type"], item["burden_type"]), item.get("funding_source_name") or "未选择",
+            members,
         ])
     payload = "\ufeff" + output.getvalue()
     total = round(sum(float(item.get("total_amount") or 0) for item in invoices), 2)
@@ -1789,6 +1885,158 @@ async def export_csv_selected(payload: dict[str, Any], request: Request) -> Stre
     return _csv_export_response(invoices)
 
 
+def _safe_export_stem(value: str, fallback: str) -> str:
+    cleaned = re.sub(r'[<>:"/\\|?*\x00-\x1f]+', "_", str(value or "")).strip(" ._")
+    return (cleaned[:90] or fallback).strip()
+
+
+def _lossless_image_pdf(path: Path) -> bytes:
+    import zlib
+    from PIL import Image, ImageOps, ImageSequence
+    from pypdf import PdfWriter
+    from pypdf.generic import DecodedStreamObject, DictionaryObject, EncodedStreamObject, NameObject, NumberObject
+
+    writer = PdfWriter()
+    with Image.open(path) as source:
+        for raw_frame in ImageSequence.Iterator(source):
+            frame = ImageOps.exif_transpose(raw_frame.copy())
+            if frame.mode in {"RGBA", "LA"} or (frame.mode == "P" and "transparency" in frame.info):
+                rgba = frame.convert("RGBA")
+                background = Image.new("RGBA", rgba.size, "white")
+                background.alpha_composite(rgba)
+                frame = background.convert("RGB")
+            else:
+                frame = frame.convert("RGB")
+            width, height = frame.size
+            dpi = frame.info.get("dpi") or source.info.get("dpi") or (96, 96)
+            try:
+                dpi_x, dpi_y = max(1.0, float(dpi[0])), max(1.0, float(dpi[1]))
+            except (TypeError, ValueError, IndexError):
+                dpi_x = dpi_y = 96.0
+            page_width, page_height = width * 72.0 / dpi_x, height * 72.0 / dpi_y
+            page = writer.add_blank_page(width=page_width, height=page_height)
+            image_stream = EncodedStreamObject()
+            image_stream._data = zlib.compress(frame.tobytes(), level=6)
+            image_stream.update({
+                NameObject("/Type"): NameObject("/XObject"), NameObject("/Subtype"): NameObject("/Image"),
+                NameObject("/Width"): NumberObject(width), NameObject("/Height"): NumberObject(height),
+                NameObject("/ColorSpace"): NameObject("/DeviceRGB"), NameObject("/BitsPerComponent"): NumberObject(8),
+                NameObject("/Filter"): NameObject("/FlateDecode"),
+            })
+            image_ref = writer._add_object(image_stream)
+            page[NameObject("/Resources")] = DictionaryObject({
+                NameObject("/XObject"): DictionaryObject({NameObject("/InvoiceImage"): image_ref})
+            })
+            content = DecodedStreamObject()
+            content.set_data(f"q {page_width:.6f} 0 0 {page_height:.6f} 0 0 cm /InvoiceImage Do Q".encode("ascii"))
+            page.replace_contents(writer._add_object(content))
+    output = io.BytesIO(); writer.write(output); return output.getvalue()
+
+
+def _invoice_source_pdf(invoice: dict[str, Any]) -> tuple[bytes, str]:
+    attachment_id = str(invoice.get("attachment_id") or "")
+    if not attachment_id:
+        raise ValueError("没有原始附件")
+    with connect() as conn:
+        attachment = conn.execute(
+            "SELECT original_name,stored_name,mime_type FROM attachments WHERE id=? AND deleted_at IS NULL",
+            (attachment_id,),
+        ).fetchone()
+    if not attachment:
+        raise ValueError("附件记录不存在")
+    path = attachment_path(attachment["stored_name"])
+    if not path.is_file():
+        raise ValueError("附件文件尚未同步到本机")
+    extension = path.suffix.lower()
+    if extension == ".pdf":
+        return path.read_bytes(), "源 PDF（未重绘）"
+    if extension in {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp"}:
+        try:
+            return _lossless_image_pdf(path), "原图像素无损封装 PDF"
+        except Exception as exc:
+            raise ValueError(f"图片转 PDF 失败：{exc}") from exc
+    raise ValueError(f"{extension or '该格式'} 暂不支持无损转为 PDF")
+
+
+def _create_pdf_export(invoices: list[dict[str, Any]], mode: str) -> tuple[Path, int, int, float]:
+    converted: list[tuple[dict[str, Any], bytes, str]] = []
+    skipped: list[str] = []
+    for index, invoice in enumerate(invoices, 1):
+        try:
+            pdf_bytes, method = _invoice_source_pdf(invoice)
+            converted.append((invoice, pdf_bytes, method))
+        except ValueError as exc:
+            skipped.append(f"{index}. {invoice.get('invoice_no') or invoice.get('vendor') or invoice.get('id')}：{exc}")
+    if not converted:
+        raise ValueError("所选发票没有可导出的 PDF 或图片源文件")
+    suffix = ".pdf" if mode == "merged" else ".zip"
+    fd, name = tempfile.mkstemp(prefix="yxrt_pdf_export_", suffix=suffix, dir=TMP_DIR)
+    os.close(fd)
+    output_path = Path(name)
+    try:
+        if mode == "merged":
+            from pypdf import PdfReader, PdfWriter
+            writer = PdfWriter()
+            for invoice, pdf_bytes, _ in converted:
+                try:
+                    writer.append(PdfReader(io.BytesIO(pdf_bytes)))
+                except Exception as exc:
+                    skipped.append(f"{invoice.get('invoice_no') or invoice.get('vendor') or invoice.get('id')}：合并失败（{exc}）")
+            if not writer.pages:
+                raise ValueError("没有可以合并的 PDF 页面")
+            with output_path.open("wb") as stream:
+                writer.write(stream)
+        else:
+            used_names: set[str] = set()
+            with zipfile.ZipFile(output_path, "w", allowZip64=True) as archive:
+                for index, (invoice, pdf_bytes, _) in enumerate(converted, 1):
+                    identity = invoice.get("invoice_no") or invoice.get("vendor") or f"发票_{index}"
+                    base = f"{index:03d}_{_safe_export_stem(str(identity), f'发票_{index}')}.pdf"
+                    candidate = base
+                    serial = 2
+                    while candidate.lower() in used_names:
+                        candidate = f"{Path(base).stem}_{serial}.pdf"; serial += 1
+                    used_names.add(candidate.lower())
+                    archive.writestr(candidate, pdf_bytes, compress_type=zipfile.ZIP_STORED)
+                if skipped:
+                    archive.writestr("未导出说明.txt", "\ufeff" + "\n".join(skipped), compress_type=zipfile.ZIP_DEFLATED)
+        total = round(sum(float(item.get("total_amount") or 0) for item, _, _ in converted), 2)
+        return output_path, len(converted), len(skipped), total
+    except Exception:
+        output_path.unlink(missing_ok=True)
+        raise
+
+
+@app.post("/api/export/pdf")
+async def export_pdf(payload: dict[str, Any], request: Request, background_tasks: BackgroundTasks) -> FileResponse:
+    auth = get_auth(request)
+    require_csrf(request, auth)
+    mode = str(payload.get("mode") or "separate")
+    if mode not in {"merged", "separate"}:
+        raise HTTPException(status_code=400, detail="PDF 导出方式不正确")
+    with connect() as conn:
+        invoices = _filtered_export_invoices(conn, payload)
+    if not invoices:
+        raise HTTPException(status_code=400, detail="当前没有可导出的发票")
+    try:
+        path, count, skipped, total = await asyncio.to_thread(_create_pdf_export, invoices, mode)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    background_tasks.add_task(path.unlink, missing_ok=True)
+    date = utc_now()[:10]
+    filename = f"燕翔车队发票_合并_{date}.pdf" if mode == "merged" else f"燕翔车队发票_逐张_{date}.zip"
+    return FileResponse(
+        path,
+        media_type="application/pdf" if mode == "merged" else "application/zip",
+        filename=filename,
+        headers={
+            "X-Export-Count": str(count),
+            "X-Export-Skipped": str(skipped),
+            "X-Export-Total": f"{total:.2f}",
+        },
+    )
+
+
 def _create_backup_archive(output_path: Path | None = None) -> Path:
     if output_path is None:
         fd, name = tempfile.mkstemp(prefix="yxrt_backup_", suffix=".zip", dir=TMP_DIR)
@@ -1825,6 +2073,37 @@ async def backup_download(request: Request, background_tasks: BackgroundTasks) -
     path = await asyncio.to_thread(_create_backup_archive)
     background_tasks.add_task(path.unlink, missing_ok=True)
     return FileResponse(path, media_type="application/zip", filename=f"燕翔车队经费备份_{utc_now()[:10]}.zip")
+
+
+@app.post("/api/admin/backup/save")
+async def backup_save_to_desktop(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    """Save directly to a path selected by the native Windows file dialog.
+
+    The browser download fallback remains available for the web build.  This
+    endpoint is deliberately desktop-only so a remote browser cannot choose an
+    arbitrary server-side path.
+    """
+    auth = get_auth(request)
+    require_admin(auth)
+    require_csrf(request, auth)
+    if APP_MODE != "desktop":
+        raise HTTPException(status_code=403, detail="仅软件版支持直接保存到本机路径")
+    raw_path = str(payload.get("target_path") or "").strip()
+    if not raw_path:
+        raise HTTPException(status_code=400, detail="未选择备份保存位置")
+    target = Path(raw_path).expanduser().resolve()
+    if target.suffix.lower() != ".zip":
+        target = target.with_suffix(".zip")
+    try:
+        path = await asyncio.to_thread(_create_backup_archive, target)
+    except OSError as exc:
+        raise HTTPException(status_code=400, detail=f"无法写入所选位置：{exc}") from exc
+    return {
+        "ok": True,
+        "filename": path.name,
+        "size": path.stat().st_size,
+        "message": "完整备份已保存",
+    }
 
 
 def _restore_backup(path: Path, user_id: str) -> None:

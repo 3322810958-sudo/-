@@ -16,6 +16,26 @@ import uvicorn
 from . import __version__
 
 
+class DesktopApi:
+    def __init__(self) -> None:
+        self.window = None
+
+    def choose_backup_path(self, suggested_name: str) -> str:
+        if self.window is None:
+            return ""
+        import webview
+        chosen = self.window.create_file_dialog(
+            webview.FileDialog.SAVE,
+            save_filename=Path(str(suggested_name or "燕翔车队经费完整备份.zip")).name,
+            file_types=("ZIP 压缩包 (*.zip)",),
+        )
+        if not chosen:
+            return ""
+        if isinstance(chosen, (tuple, list)):
+            chosen = chosen[0]
+        return str(chosen)
+
+
 def port_ready(host: str, port: int) -> bool:
     try:
         with socket.create_connection((host, port), timeout=0.4):
@@ -75,6 +95,7 @@ def main() -> None:
         import webview
         webview_storage = runtime_home / "data" / "webview"
         webview_storage.mkdir(parents=True, exist_ok=True)
+        desktop_api = DesktopApi()
         window = webview.create_window(
             f"燕翔车队经费管理系统 V{__version__}",
             url,
@@ -83,7 +104,9 @@ def main() -> None:
             min_size=(1024, 700),
             background_color="#050a11",
             confirm_close=True,
+            js_api=desktop_api,
         )
+        desktop_api.window = window
         webview.start(
             gui="edgechromium",
             private_mode=False,

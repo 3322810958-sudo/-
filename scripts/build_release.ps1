@@ -1,6 +1,7 @@
 ﻿param(
-  [string]$Version = "2.2.1",
-  [switch]$SkipBuild
+  [string]$Version = "2.2.2",
+  [switch]$SkipBuild,
+  [switch]$SkipTutorialPdf
 )
 
 $ErrorActionPreference = "Stop"
@@ -21,6 +22,10 @@ if (-not (Test-Path -LiteralPath (Join-Path $target "燕翔车队经费管理系
   throw "未找到构建后的主程序：$target"
 }
 
+$webTarget = Join-Path $target "web"
+if (Test-Path -LiteralPath $webTarget) { Remove-Item -LiteralPath $webTarget -Recurse -Force }
+Copy-Item -LiteralPath (Join-Path $root "app\static") -Destination $webTarget -Recurse -Force
+
 if (Test-Path -LiteralPath (Join-Path $root "models")) {
   Copy-Item -LiteralPath (Join-Path $root "models") -Destination (Join-Path $target "models") -Recurse -Force
 }
@@ -32,11 +37,12 @@ $guideDir = Join-Path $target "使用教程"
 New-Item -ItemType Directory -Path $guideDir -Force | Out-Null
 Copy-Item -LiteralPath (Join-Path $root "docs\运行与使用说明.md") -Destination $guideDir -Force
 Copy-Item -LiteralPath (Join-Path $root "docs\补丁安装说明.txt") -Destination $guideDir -Force
-if (Test-Path -LiteralPath $python) {
+if ((-not $SkipTutorialPdf) -and (Test-Path -LiteralPath $python)) {
   & $python scripts\create_tutorial_pdf.py
   if ($LASTEXITCODE -ne 0) { throw "PDF 使用教程生成失败" }
-  Copy-Item -LiteralPath (Join-Path $root "output\pdf\燕翔车队经费管理系统_V2.2_使用教程.pdf") -Destination $guideDir -Force
 }
+$existingGuide = Join-Path $root "output\pdf\燕翔车队经费管理系统_V2.2_使用教程.pdf"
+if (Test-Path -LiteralPath $existingGuide) { Copy-Item -LiteralPath $existingGuide -Destination $guideDir -Force }
 
 New-Item -ItemType Directory -Path $releaseDir -Force | Out-Null
 $fullZip = Join-Path $releaseDir "燕翔车队经费管理系统_V$Version`_Windows完整版.zip"
@@ -57,10 +63,10 @@ if (Test-Path -LiteralPath $patchStage) {
 
 Compress-Archive -Path (Join-Path $target "*") -DestinationPath $fullZip -CompressionLevel Optimal
 New-Item -ItemType Directory -Path $patchStage -Force | Out-Null
-$preserve = @("data", "uploads", "models", "tmp", ".env")
-foreach ($item in Get-ChildItem -LiteralPath $target) {
-  if ($preserve -contains $item.Name -or $item.Name.StartsWith(".update-backup-")) { continue }
-  Copy-Item -LiteralPath $item.FullName -Destination (Join-Path $patchStage $item.Name) -Recurse -Force
+$deltaItems = @("燕翔车队经费管理系统.exe", "web", "README.md", "README_FIRST.txt", "CHANGELOG.md")
+foreach ($name in $deltaItems) {
+  $item = Join-Path $target $name
+  if (Test-Path -LiteralPath $item) { Copy-Item -LiteralPath $item -Destination (Join-Path $patchStage $name) -Recurse -Force }
 }
 Copy-Item -LiteralPath (Join-Path $root "docs\补丁安装说明.txt") -Destination $patchStage -Force
 Compress-Archive -Path (Join-Path $patchStage "*") -DestinationPath $updateZip -CompressionLevel Optimal

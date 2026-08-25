@@ -404,7 +404,7 @@ def set_setting(conn: sqlite3.Connection, key: str, value: str, *, sync: bool = 
     if sync and key in {
         "team_name", "background_image", "background_media_id", "background_media_kind",
         "background_overlay", "accent_color", "login_slideshow_enabled", "login_slides",
-        "login_transition", "loading_cars", "classification_rules", "current_season_id",
+        "login_transition", "loading_cars", "classification_rules", "invoice_defaults", "current_season_id",
     }:
         enqueue_sync_event(conn, "app_settings", key, "upsert", {
             "key": key, "value": value, "updated_at": now, "version": version, "device_id": device_id
@@ -735,6 +735,7 @@ def seed_defaults(conn: sqlite3.Connection) -> None:
         "login_slides": "[]",
         "login_transition": "fade",
         "loading_cars": "[]",
+        "invoice_defaults": "{}",
         "classification_rules": "[]",
         "current_season_id": DEFAULT_SEASON_ID,
         "sync_enabled": "0",

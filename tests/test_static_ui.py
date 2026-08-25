@@ -8,7 +8,7 @@ CSS = (ROOT / "app" / "static" / "app.css").read_text(encoding="utf-8")
 
 
 def test_high_readability_modes_are_available() -> None:
-    for mode in ("clear-dark", "light", "racing-blue"):
+    for mode in ("clear-dark", "light", "racing-blue", "graphite", "midnight", "teal", "warm"):
         assert f'value="{mode}"' in HTML
         assert f'html[data-theme="{mode}"]' in CSS or mode == "clear-dark"
     assert "yanxiang-display-mode" in JS
@@ -47,3 +47,15 @@ def test_season_and_creator_interfaces_are_wired() -> None:
     assert "/api/admin/creators" in JS
     assert "openSeasonManager" in JS
     assert "renderCreators" in JS
+
+
+def test_v222_previews_pdf_backup_and_defaults_are_wired() -> None:
+    for element_id in (
+        "invoiceAttachmentPreview", "batchFilePreview", "attachmentViewerDialog",
+        "exportPdfBtn", "pdfExportDialog", "downloadBackupBtn", "invoiceDefaultsDialog",
+    ):
+        assert f'id="{element_id}"' in HTML
+    assert "/api/export/pdf" in JS
+    assert "downloadBackup" in JS
+    assert "openAttachmentViewer" in JS
+    assert "showSaveFilePicker" in JS

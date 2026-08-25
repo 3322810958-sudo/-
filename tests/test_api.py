@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import base64
+import io
+import zipfile
 
 from fastapi.testclient import TestClient
+from pypdf import PdfWriter
 
 from app.main import app
 
@@ -192,7 +195,8 @@ def test_v22_selected_csv_batch_actions_and_submitter_columns():
         expected_total = sum(float(item["total_amount"]) for item in chosen)
         assert float(selected_export.headers["X-Export-Total"]) == expected_total
         csv_text = selected_export.content.decode("utf-8-sig")
-        assert "开票日期,上传日期,提交人,提交账号" in csv_text
+        assert csv_text.splitlines()[0] == "发票号码,总金额,分类,承担方式,资金来源,成员"
+        assert "垫付：" in csv_text and "分摊：" in csv_text
 
         category_update = client.post(
             "/api/invoices/batch-action",
@@ -372,3 +376,83 @@ def test_v221_season_isolation_and_creator_management():
         read_only = admin.post("/api/members", json={"name": "禁止新增"}, headers=headers)
         assert read_only.status_code == 403
         assert admin.post(f"/api/admin/seasons/{season_2026['id']}/switch", headers=headers).status_code == 200
+
+
+def test_v222_pdf_export_defaults_and_member_update_permissions(monkeypatch):
+    with TestClient(app) as admin:
+        _, headers = login(admin, "admin", "YXRT@2026")
+        bootstrap = admin.get("/api/bootstrap").json()
+        member_id = next(item["id"] for item in bootstrap["members"] if item["active"])
+        defaults = admin.put(
+            "/api/admin/invoice-defaults",
+            json={
+                "category_id": "cat_electrical", "payer_member_id": member_id,
+                "funding_source_id": "src_aa", "burden_type": "specified_split",
+                "split_member_ids": [member_id], "batch_note": "默认测试批次",
+                "burden_labels": {"team_aa": "全员均摊", "specified_split": "选定成员", "self_paid": "个人自付"},
+            },
+            headers=headers,
+        )
+        assert defaults.status_code == 200, defaults.text
+        saved_defaults = admin.get("/api/bootstrap").json()["settings"]["invoice_defaults"]
+        assert saved_defaults["batch_note"] == "默认测试批次"
+        assert saved_defaults["burden_labels"]["specified_split"] == "选定成员"
+
+        pdf = io.BytesIO()
+        writer = PdfWriter(); writer.add_blank_page(width=595, height=842); writer.write(pdf)
+        uploaded = admin.post(
+            "/api/attachments", files={"file": ("source-invoice.pdf", pdf.getvalue(), "application/pdf")}, headers=headers
+        )
+        assert uploaded.status_code == 200, uploaded.text
+        attachment_id = uploaded.json()["attachment"]["id"]
+        created = admin.post(
+            "/api/invoices",
+            json={
+                "invoice_date": "2026-08-25", "total_amount": "66.60", "tax_amount": "0",
+                "invoice_no": "PDF-222", "vendor": "PDF测试商家", "product_type": "电气元器件",
+                "category_id": "cat_electrical", "payer_member_id": member_id, "funding_source_id": "src_aa",
+                "burden_type": "self_paid", "split_mode": "equal", "split_member_ids": [member_id],
+                "attachment_id": attachment_id,
+            },
+            headers=headers,
+        )
+        assert created.status_code == 200, created.text
+        invoice_id = created.json()["id"]
+        separate = admin.post("/api/export/pdf", json={"mode": "separate", "ids": [invoice_id]}, headers=headers)
+        assert separate.status_code == 200, separate.text
+        assert separate.headers["X-Export-Count"] == "1"
+        with zipfile.ZipFile(io.BytesIO(separate.content)) as archive:
+            names = [name for name in archive.namelist() if name.lower().endswith(".pdf")]
+            assert len(names) == 1
+            assert archive.read(names[0]).startswith(b"%PDF")
+        merged = admin.post("/api/export/pdf", json={"mode": "merged", "ids": [invoice_id]}, headers=headers)
+        assert merged.status_code == 200, merged.text
+        assert merged.content.startswith(b"%PDF")
+
+        import app.main as main_module
+        old_mode = main_module.APP_MODE
+        main_module.APP_MODE = "desktop"
+        try:
+            backup_target = main_module.TMP_DIR / "native-backup-test.zip"
+            native_backup = admin.post(
+                "/api/admin/backup/save", json={"target_path": str(backup_target)}, headers=headers
+            )
+            assert native_backup.status_code == 200, native_backup.text
+            assert native_backup.json()["size"] > 0
+            assert backup_target.read_bytes()[:2] == b"PK"
+            backup_target.unlink()
+        finally:
+            main_module.APP_MODE = old_mode
+
+    monkeypatch.setattr(main_module, "start_update_download", lambda user_id: {"id": "update_member", "created_by": user_id, "status": "downloading"})
+    monkeypatch.setattr(main_module, "get_update_job", lambda job_id: {"id": job_id, "created_by": "user_viewer", "status": "ready", "progress": 100})
+    monkeypatch.setattr(main_module, "schedule_update_install", lambda job_id, user_id: {"ok": True, "message": "测试安装", "user_id": user_id})
+    with TestClient(app) as viewer:
+        payload, viewer_headers = login(viewer, "viewer", "View@2026")
+        denied_defaults = viewer.put("/api/admin/invoice-defaults", json={}, headers=viewer_headers)
+        assert denied_defaults.status_code == 403
+        download = viewer.post("/api/admin/update/download", headers=viewer_headers)
+        assert download.status_code == 200, download.text
+        monkeypatch.setattr(main_module, "get_update_job", lambda job_id: {"id": job_id, "created_by": payload["user"]["id"], "status": "ready", "progress": 100})
+        assert viewer.get("/api/admin/update/jobs/update_member").status_code == 200
+        assert viewer.post("/api/admin/update/jobs/update_member/install", headers=viewer_headers).status_code == 200

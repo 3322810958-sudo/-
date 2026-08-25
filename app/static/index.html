@@ -4,9 +4,9 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#07101b">
-  <title>燕翔车队经费管理系统 V2.2.1</title>
+  <title>燕翔车队经费管理系统 V2.2.2</title>
   <link rel="icon" href="/static/assets/team-logo.png">
-  <link rel="stylesheet" href="/static/app.css?v=2.2.1">
+  <link rel="stylesheet" href="/static/app.css?v=2.2.2">
 </head>
 <body>
   <div id="backgroundLayer" class="background-layer"><video id="appBackgroundVideo" muted loop autoplay playsinline></video></div>
@@ -17,6 +17,10 @@
         <option value="clear-dark">清晰深色</option>
         <option value="light">护眼浅色</option>
         <option value="racing-blue">赛车蓝（高对比）</option>
+        <option value="graphite">石墨灰</option>
+        <option value="midnight">午夜紫</option>
+        <option value="teal">工程青</option>
+        <option value="warm">暖灰护眼</option>
       </select>
     </label>
     <div id="loginMediaStage" class="login-media-stage" aria-hidden="true">
@@ -30,7 +34,7 @@
       <div class="login-brand">
         <img src="/static/assets/team-logo.png" alt="燕翔车队队标">
         <div>
-          <p class="eyebrow">赛车运营 · V2.2.1</p>
+          <p class="eyebrow">赛车运营 · V2.2.2</p>
           <h1><span id="loginTeamName">燕翔车队</span><br><span>经费管理系统</span></h1>
         </div>
       </div>
@@ -72,7 +76,7 @@
         <div id="syncLamp" class="status-lamp"></div>
         <div><strong id="syncLabel">本地模式</strong><small id="syncDetail">数据安全保存在本机</small></div>
       </div>
-      <div class="sidebar-foot"><span>燕翔车队经费</span><span id="versionLabel">V2.2.1</span></div>
+      <div class="sidebar-foot"><span>燕翔车队经费</span><span id="versionLabel">V2.2.2</span></div>
     </aside>
 
     <div class="content-shell">
@@ -86,6 +90,10 @@
               <option value="clear-dark">清晰深色</option>
               <option value="light">护眼浅色</option>
               <option value="racing-blue">赛车蓝（高对比）</option>
+              <option value="graphite">石墨灰</option>
+              <option value="midnight">午夜紫</option>
+              <option value="teal">工程青</option>
+              <option value="warm">暖灰护眼</option>
             </select>
           </label>
           <div id="liveBadge" class="live-badge"><i></i><span>实时</span></div>
@@ -127,7 +135,7 @@
         <section id="invoicesSection" class="view-section">
           <div class="section-toolbar">
             <div><p class="eyebrow">发票与票据</p><h3>发票台账</h3><p>所有票据、垫付与报销状态统一管理。</p></div>
-            <div class="toolbar-actions"><button id="batchImportBtn" class="btn secondary write-only">批量导入</button><button id="exportCsvBtn" type="button" class="btn secondary">导出 CSV</button><button id="invoiceAddBtn" class="btn primary write-only">＋ 新增记录</button></div>
+            <div class="toolbar-actions"><button id="batchImportBtn" class="btn secondary write-only">批量导入</button><button id="exportPdfBtn" type="button" class="btn secondary">批量导出 PDF</button><button id="exportCsvBtn" type="button" class="btn secondary">导出 CSV</button><button id="invoiceAddBtn" class="btn primary write-only">＋ 新增记录</button></div>
           </div>
           <article class="panel filter-panel">
             <div class="filter-grid">
@@ -185,13 +193,14 @@
             <article class="panel setting-card"><div class="setting-icon">账号</div><div><h3>我的账号</h3><p>修改当前账号与密码。</p><button id="changeCredentialsBtn" class="btn secondary">修改登录信息</button></div></article>
             <article class="panel setting-card"><div class="setting-icon">键</div><div><h3>自定义快捷键</h3><p>为录入、搜索、页面切换和主题切换设置按键组合。</p><button id="openShortcutsBtn" class="btn secondary">配置快捷键</button></div></article>
             <article class="panel setting-card write-only"><div class="setting-icon">选项</div><div><h3>分类与资金来源</h3><p>维护录入发票时可选的费用分类和资金来源。</p><button id="openReferencesBtn" class="btn secondary">管理选项</button></div></article>
+            <article class="panel setting-card" data-admin><div class="setting-icon">默认</div><div><h3>录入与批量导入默认值</h3><p>配置默认分类、成员、资金来源、承担方式与批次备注。</p><button id="openInvoiceDefaultsBtn" class="btn secondary">配置默认值</button></div></article>
             <article class="panel setting-card" data-admin><div class="setting-icon">壁纸</div><div><h3>界面、壁纸与登录轮播</h3><p>连接 Wallpaper Engine，或上传图片、动图和视频。</p><button id="openAppearanceBtn" class="btn secondary">配置界面</button></div></article>
             <article class="panel setting-card" data-admin><div class="setting-icon">分类</div><div><h3>发票智能分类</h3><p>编辑离线关键词规则，并结合商家历史选择自动学习。</p><button id="openClassificationBtn" class="btn secondary">管理识别规则</button></div></article>
             <article class="panel setting-card" data-admin><div class="setting-icon">↕</div><div><h3>云端自动同步</h3><p id="syncSettingText">未配置云端服务器。</p><button id="openSyncBtn" class="btn secondary">配置同步</button></div></article>
-            <article class="panel setting-card" data-admin><div class="setting-icon">备份</div><div><h3>备份与恢复</h3><p>完整备份数据库和全部附件。</p><div class="inline-actions"><a class="btn secondary" href="/api/admin/backup">下载备份</a><label class="btn danger subtle">恢复备份<input id="restoreBackupInput" type="file" accept=".zip" hidden></label></div></div></article>
+            <article class="panel setting-card" data-admin><div class="setting-icon">备份</div><div><h3>备份与恢复</h3><p>完整备份数据库和全部附件，并主动选择保存位置。</p><div class="inline-actions"><button id="downloadBackupBtn" type="button" class="btn secondary">下载备份</button><label class="btn danger subtle">恢复备份<input id="restoreBackupInput" type="file" accept=".zip" hidden></label></div></div></article>
             <article class="panel setting-card" data-admin><div class="setting-icon">演示</div><div><h3>演示数据</h3><p>只清除初始演示记录，不影响正式数据。</p><button id="deleteDemoBtn" class="btn danger subtle">清除演示数据</button></div></article>
             <article class="panel setting-card"><div class="setting-icon">识别</div><div><h3>离线文字识别</h3><p>优先读取 PDF 文本，扫描件使用本地识别引擎，不上传第三方。</p><span class="setting-state good">本机运行</span></div></article>
-            <article class="panel setting-card"><div class="setting-icon">版本</div><div><h3>更新日志与无损自动更新</h3><p>从任意已支持更新的旧版一键升级；数据库、附件、账号与界面设置保持不变。</p><button id="openUpdateBtn" class="btn secondary">版本与更新</button></div></article>
+            <article class="panel setting-card"><div class="setting-icon">版本</div><div><h3>更新日志与无损自动更新</h3><p>所有成员均可检查并一键升级；数据库、附件、账号与界面设置保持不变。</p><button id="openUpdateBtn" class="btn secondary">版本与更新</button></div></article>
           </div>
         </section>
       </main>
@@ -227,6 +236,7 @@
         <label class="upload-zone"><input id="invoiceFile" type="file" accept="image/*,.pdf,.ofd,.txt"><span class="upload-symbol">⇧</span><span><b>上传发票附件</b><small>图片 / PDF / OFD / TXT，无固定大小限制</small></span></label>
         <div class="ocr-panel"><span id="fileState">尚未选择附件</span><button id="runOcrBtn" type="button" class="btn secondary" disabled>离线识别</button><div class="ocr-progress"><i id="ocrProgressBar"></i></div><small id="ocrMessage">电子 PDF 将优先直接读取文字</small></div>
       </div>
+      <div id="invoiceAttachmentPreview" class="attachment-preview-strip hidden"></div>
       <div class="form-grid three">
         <label><span>开票日期 *</span><input id="invoiceDate" type="date" required></label>
         <label><span>发票总额 / 元 *</span><input id="invoiceAmount" type="number" min="0.01" step="0.01" required placeholder="0.00"></label>
@@ -254,11 +264,13 @@
     </form>
   </dialog>
 
-  <dialog id="batchDialog" class="modal">
+  <dialog id="batchDialog" class="modal large-modal">
     <form id="batchForm" class="modal-card">
       <header><div><p class="eyebrow">批量导入</p><h3>ZIP 或多张发票导入</h3></div><button type="button" class="dialog-close" data-close="batchDialog">×</button></header>
       <label class="upload-zone batch-upload"><input id="batchFile" type="file" accept=".zip,image/*,.pdf,.ofd,.txt" multiple required><span class="upload-symbol">多选</span><span><b>选择 ZIP 或多个发票文件</b><small>支持图片、PDF、OFD、TXT；自动并行识别并汇总数量和金额</small></span></label>
+      <div id="batchFilePreview" class="batch-file-preview"><div class="empty-state">选择文件后将在这里显示缩略图，点击可放大查看原文件。</div></div>
       <div class="form-grid two"><label><span>默认分类</span><select id="batchCategory"></select></label><label><span>默认垫付成员</span><select id="batchPayer"></select></label><label><span>默认资金来源</span><select id="batchSource"></select></label><label><span>默认承担方式</span><select id="batchBurden"><option value="team_aa">全队 AA</option><option value="specified_split">指定成员</option><option value="self_paid">个人承担</option></select></label></div>
+      <section id="batchSplitWrap" class="batch-split-wrap hidden"><span>指定均摊成员</span><div id="batchSplitMembers" class="split-member-picker compact-picker"></div></section>
       <label class="full-label"><span>批次备注</span><textarea id="batchNote" rows="2" placeholder="例如：8 月电气组采购批次"></textarea></label>
       <div id="batchResult" class="batch-result"></div>
       <footer><button type="button" class="btn secondary" data-close="batchDialog">取消</button><button class="btn primary" type="submit">开始批量导入</button></footer>
@@ -277,6 +289,19 @@
         <label class="full-label"><span>报销日期</span><input id="batchActionDate" type="date"></label>
       </div>
       <footer><button type="button" class="btn secondary" data-close="batchActionDialog">取消</button><button class="btn primary">应用到所选发票</button></footer>
+    </form>
+  </dialog>
+
+  <dialog id="pdfExportDialog" class="modal small-modal">
+    <form id="pdfExportForm" class="modal-card">
+      <header><div><p class="eyebrow">原文件导出</p><h3>批量导出 PDF</h3></div><button type="button" class="dialog-close" data-close="pdfExportDialog">×</button></header>
+      <p id="pdfExportSummary" class="batch-action-summary"></p>
+      <div class="pdf-mode-grid">
+        <label><input type="radio" name="pdfExportMode" value="separate" checked><span><b>一张发票一个 PDF</b><small>10 张发票生成 10 个 PDF，并压缩为一个 ZIP</small></span></label>
+        <label><input type="radio" name="pdfExportMode" value="merged"><span><b>合并为一个 PDF</b><small>按台账顺序合并所有页面</small></span></label>
+      </div>
+      <p class="export-quality-note">源文件为 PDF 时直接使用；图片按原始像素无缩放封装，不重新截图或降低清晰度。</p>
+      <footer><button type="button" class="btn secondary" data-close="pdfExportDialog">取消</button><button class="btn primary">选择位置并导出</button></footer>
     </form>
   </dialog>
 
@@ -320,6 +345,18 @@
     </div>
   </dialog>
 
+  <dialog id="invoiceDefaultsDialog" class="modal large-modal">
+    <form id="invoiceDefaultsForm" class="modal-card">
+      <header><div><p class="eyebrow">管理员默认配置</p><h3>录入与批量导入默认值</h3></div><button type="button" class="dialog-close" data-close="invoiceDefaultsDialog">×</button></header>
+      <div class="form-grid two"><label><span>默认分类</span><select id="defaultInvoiceCategory"></select></label><label><span>默认垫付成员</span><select id="defaultInvoicePayer"></select></label><label><span>默认资金来源</span><select id="defaultInvoiceSource"></select></label><label><span>默认承担方式</span><select id="defaultInvoiceBurden"><option value="team_aa">全队 AA</option><option value="specified_split">指定成员</option><option value="self_paid">个人承担</option></select></label></div>
+      <section id="defaultSplitWrap" class="batch-split-wrap hidden"><span>默认指定均摊成员</span><div id="defaultSplitMembers" class="split-member-picker compact-picker"></div></section>
+      <label class="full-label"><span>默认批次备注</span><textarea id="defaultBatchNote" rows="2" maxlength="500" placeholder="留空表示每次手动填写"></textarea></label>
+      <section class="burden-label-editor"><span>承担方式显示名称</span><div class="form-grid three"><label><span>全队 AA</span><input id="burdenLabelTeam" maxlength="30"></label><label><span>指定成员</span><input id="burdenLabelSpecified" maxlength="30"></label><label><span>个人承担</span><input id="burdenLabelSelf" maxlength="30"></label></div></section>
+      <p class="export-quality-note">费用分类与资金来源的具体内容仍在“分类与资金来源”中添加、停用或修改。</p>
+      <footer><button type="button" class="btn secondary" data-close="invoiceDefaultsDialog">取消</button><button class="btn primary">保存默认配置</button></footer>
+    </form>
+  </dialog>
+
   <dialog id="appearanceDialog" class="modal large-modal">
     <form id="appearanceForm" class="modal-card">
       <header><div><p class="eyebrow">界面外观</p><h3>品牌、壁纸与登录轮播</h3></div><button type="button" class="dialog-close" data-close="appearanceDialog">×</button></header>
@@ -327,11 +364,12 @@
         <section class="appearance-pane">
           <div class="appearance-heading"><div><b>全局界面</b><small>修改车队名称、主题颜色和背景显示强度</small></div></div>
           <div class="appearance-theme-row">
-            <label class="theme-select-wrap"><span>本机显示模式</span><select data-theme-select aria-label="外观设置显示模式"><option value="clear-dark">清晰深色</option><option value="light">护眼浅色</option><option value="racing-blue">赛车蓝（高对比）</option></select></label>
+            <label class="theme-select-wrap"><span>本机显示模式</span><select data-theme-select aria-label="外观设置显示模式"><option value="clear-dark">清晰深色</option><option value="light">护眼浅色</option><option value="racing-blue">赛车蓝（高对比）</option><option value="graphite">石墨灰</option><option value="midnight">午夜紫</option><option value="teal">工程青</option><option value="warm">暖灰护眼</option></select></label>
             <small>选择会立即生效并保存在当前电脑，不影响其他成员各自的显示偏好。</small>
           </div>
           <div class="form-grid two"><label><span>系统名称</span><input id="teamNameSetting"></label><label><span>主题强调色</span><input id="accentColor" type="color" value="#27d3ff"></label></div>
           <label class="full-label"><span>背景遮罩强度 <b id="overlayValue">82%</b></span><input id="backgroundOverlay" type="range" min="20" max="98" value="82"></label>
+          <div class="background-preset-row"><span>背景清晰度预设</span><button type="button" data-overlay-preset="35">非常明显</button><button type="button" data-overlay-preset="50">明显</button><button type="button" data-overlay-preset="68">均衡</button><button type="button" data-overlay-preset="82">清晰文字</button><button type="button" data-overlay-preset="92">弱背景</button></div>
           <div class="background-control"><div id="backgroundPreview" class="media-preview empty">当前使用默认赛车背景</div><div><label class="btn secondary media-upload-btn">上传自定义背景<input id="backgroundFile" type="file" accept="image/*,video/mp4,video/webm,.gif,.m4v" hidden></label><button id="clearBackgroundBtn" type="button" class="btn danger subtle">恢复默认背景</button><small>支持图片、GIF、MP4 和 WebM，文件保存在本机。</small></div></div>
         </section>
 
@@ -415,11 +453,20 @@
   <dialog id="updateDialog" class="modal">
     <div class="modal-card">
       <header><div><p class="eyebrow">版本管理</p><h3>更新日志与自动更新</h3></div><button type="button" class="dialog-close" data-close="updateDialog">×</button></header>
-      <div class="update-current"><div><span>当前版本</span><strong id="updateCurrentVersion">V2.2.1</strong></div><label class="mini-switch"><input id="autoUpdateCheck" type="checkbox" checked><span>启动后自动检查</span></label></div>
+      <div class="update-current"><div><span>当前版本</span><strong id="updateCurrentVersion">V2.2.2</strong></div><label class="mini-switch"><input id="autoUpdateCheck" type="checkbox" checked><span>启动后自动检查</span></label></div>
       <div class="update-actions"><button id="checkUpdateBtn" type="button" class="btn secondary">检查 GitHub 新版本</button><a id="updateReleaseLink" class="btn secondary hidden" target="_blank" rel="noopener">查看发布页面</a><button id="installUpdateBtn" type="button" class="btn primary hidden">一键更新到最新版</button></div>
       <div id="updateStatus" class="update-status">正在读取本地更新日志……</div>
       <div id="changelogList" class="changelog-list"></div>
       <footer><button type="button" class="btn primary" data-close="updateDialog">完成</button></footer>
+    </div>
+  </dialog>
+
+  <dialog id="attachmentViewerDialog" class="modal attachment-viewer-modal">
+    <div class="modal-card attachment-viewer-card">
+      <header><div><p class="eyebrow">附件预览</p><h3 id="attachmentViewerTitle">查看原文件</h3></div><button type="button" class="dialog-close" data-close="attachmentViewerDialog">×</button></header>
+      <div class="attachment-viewer-tools"><button id="attachmentZoomOut" type="button" class="btn secondary">－ 缩小</button><strong id="attachmentZoomValue">100%</strong><button id="attachmentZoomIn" type="button" class="btn secondary">＋ 放大</button><button id="attachmentZoomReset" type="button" class="btn secondary">恢复 100%</button><a id="attachmentOpenOriginal" class="btn primary" target="_blank" rel="noopener">打开原文件</a></div>
+      <div id="attachmentViewerCanvas" class="attachment-viewer-canvas"></div>
+      <footer><button type="button" class="btn primary" data-close="attachmentViewerDialog">完成</button></footer>
     </div>
   </dialog>
 
@@ -431,6 +478,6 @@
       <small id="loadingDetail">任务正在本机运行，请勿关闭软件</small>
     </div>
   </div>
-  <script src="/static/app.js?v=2.2.1"></script>
+  <script src="/static/app.js?v=2.2.2"></script>
 </body>
 </html>
