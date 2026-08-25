@@ -11,7 +11,7 @@ const state = {
   shortcuts: {}, shortcutDraft: {},
   loadingTimer: null, loadingProgress: 0, loadingToken: 0, updateRelease: null,
   currentInvoicePreview: null, batchPreviewFiles: [], attachmentViewerZoom: 1,
-  version: "2.2.3", updateJobId: "",
+  version: "2.2.4", updateJobId: "",
 };
 
 const DISPLAY_MODE_KEY = "yanxiang-display-mode";
@@ -20,6 +20,7 @@ const DISPLAY_MODE_LABELS = { "clear-dark": "清晰深色", light: "护眼浅色
 const SHORTCUT_STORAGE_KEY = "yanxiang-shortcuts-v1";
 const AUTO_UPDATE_STORAGE_KEY = "yanxiang-auto-update-check";
 const LAST_UPDATE_CHECK_KEY = "yanxiang-last-update-check";
+const UPDATE_INSTALL_MODE_KEY = "yanxiang-update-install-mode";
 const DEFAULT_LOADING_CARS = [
   { id: "default_formula_1", title: "方程式赛车一", url: "/static/assets/loading-car-formula-1.png" },
   { id: "default_formula_2", title: "方程式赛车二", url: "/static/assets/loading-car-formula-2.png" },
@@ -391,7 +392,7 @@ function applyTheme() {
     if (video.getAttribute("src") !== mediaUrl) video.src = mediaUrl;
     video.classList.add("active"); video.play().catch(() => {});
   } else { video.pause(); video.removeAttribute("src"); video.load(); video.classList.remove("active"); }
-  document.title = `${settings.team_name || "燕翔车队"} · 经费管理系统 V${state.version || "2.2.3"}`;
+  document.title = `${settings.team_name || "燕翔车队"} · 经费管理系统 V${state.version || "2.2.4"}`;
 }
 
 function applyAccess() {
@@ -443,7 +444,7 @@ async function loadBootstrap() {
   state.settings = data.settings || {};
   state.dashboard = data.dashboard;
   state.sync = data.sync || {};
-  state.version = data.version || "2.2.3";
+  state.version = data.version || "2.2.4";
   $("versionLabel").textContent = `V${data.version}`;
   $("updateCurrentVersion").textContent = `V${state.version}`;
   state.publicSettings = state.settings; applyTheme(); applyAccess(); renderSync(state.sync); renderReferenceOptions(); renderDashboard(); showApp(); connectSocket();
@@ -1641,6 +1642,22 @@ function autoUpdateEnabled() {
   try { return localStorage.getItem(AUTO_UPDATE_STORAGE_KEY) !== "0"; } catch (_) { return true; }
 }
 
+function updateInstallMode() {
+  try { return localStorage.getItem(UPDATE_INSTALL_MODE_KEY) === "manual" ? "manual" : "auto"; } catch (_) { return "auto"; }
+}
+
+function applyUpdateInstallMode(mode, notify = false) {
+  const selected = mode === "manual" ? "manual" : "auto";
+  try { localStorage.setItem(UPDATE_INSTALL_MODE_KEY, selected); } catch (_) { /* 当前会话仍可使用 */ }
+  $("updateInstallMode").value = selected;
+  $("updateModeHint").textContent = selected === "manual"
+    ? "下载轻量补丁 ZIP，关闭软件后解压到原软件文件夹并覆盖；data、uploads、models 和 backups 不会包含在补丁中。"
+    : "安装前自动备份全部赛季、人员、组别、账号、发票与附件，再校验补丁、重启并更新。";
+  if (state.updateRelease) renderUpdateResult(state.updateRelease);
+  if (notify) toast(selected === "manual" ? "已切换为手动补丁更新" : "已切换为自动备份并更新");
+  return selected;
+}
+
 async function loadChangelog() {
   try {
     const response = await fetch(`/static/changelog.json?v=${encodeURIComponent(state.version)}`, { cache: "no-store" });
@@ -1653,16 +1670,24 @@ async function loadChangelog() {
 function renderUpdateResult(result) {
   state.updateRelease = result;
   const status = $("updateStatus"), releaseLink = $("updateReleaseLink"), installButton = $("installUpdateBtn");
+  const installMode = updateInstallMode();
   status.className = "update-status"; releaseLink.classList.add("hidden"); installButton.classList.add("hidden");
   $("updateCurrentVersion").textContent = `V${result.current_version || state.version}`;
   if (result.release_url) { releaseLink.href = result.release_url; releaseLink.classList.remove("hidden"); }
   if (result.available) {
     status.classList.add("available");
-    status.textContent = `发现最新版 V${result.latest_version}。更新只替换程序文件，数据库、附件、账号、壁纸和 OCR 模型均保留。`;
-    if (isAdmin() && result.install_supported) {
-      installButton.textContent = `一键更新到 V${result.latest_version}`; installButton.classList.remove("hidden");
-    } else if (!result.install_supported) {
-      status.textContent += " 当前为网页版/开发预览，请在 Windows 软件中执行一键更新，或使用补丁包覆盖。";
+    if (installMode === "manual") {
+      status.textContent = `发现最新版 V${result.latest_version}。可下载轻量补丁，关闭软件后解压覆盖原文件；业务数据不会打入补丁。`;
+      if (result.package?.browser_url || result.release_url) {
+        installButton.textContent = `下载 V${result.latest_version} 补丁包`; installButton.classList.remove("hidden");
+      }
+    } else {
+      status.textContent = `发现最新版 V${result.latest_version}。软件会先建立完整备份，再替换程序并自动重启；人员、组别、账号、发票和附件均保留。`;
+      if (result.install_supported) {
+        installButton.textContent = `自动备份并更新到 V${result.latest_version}`; installButton.classList.remove("hidden");
+      } else {
+        status.textContent += " 当前为网页版/开发预览，请切换到手动补丁模式下载，或在 Windows 软件中执行自动更新。";
+      }
     }
   } else {
     status.classList.add("good"); status.textContent = result.message || `当前 V${state.version} 已是最新版本。`;
@@ -1685,6 +1710,7 @@ async function checkForUpdates(interactive = true) {
 
 async function openUpdateDialog() {
   $("autoUpdateCheck").checked = autoUpdateEnabled();
+  applyUpdateInstallMode(updateInstallMode());
   $("updateCurrentVersion").textContent = `V${state.version}`;
   $("updateStatus").className = "update-status"; $("updateStatus").textContent = "正在读取本地更新日志……";
   $("updateDialog").showModal(); await loadChangelog(); await checkForUpdates(false);
@@ -1692,22 +1718,29 @@ async function openUpdateDialog() {
 
 async function installLatestUpdate() {
   if (!state.updateRelease?.available) { const result = await checkForUpdates(true); if (!result?.available) return; }
-  loading(true, "正在下载最新版", 1, "数据目录不会被替换", false);
+  if (updateInstallMode() === "manual") {
+    const url = state.updateRelease?.package?.browser_url || state.updateRelease?.release_url;
+    if (!url) { toast("未找到补丁下载地址", "error"); return; }
+    const link = document.createElement("a"); link.href = url; link.target = "_blank"; link.rel = "noopener"; document.body.appendChild(link); link.click(); link.remove();
+    toast("补丁下载已打开：关闭软件后解压到原软件文件夹并覆盖", "success", 8000);
+    return;
+  }
+  loading(true, "正在下载最新版", 1, "安装前会先自动完整备份", false);
   try {
     const started = await api("/api/admin/update/download", { method: "POST" }); state.updateJobId = started.id;
     let job = started;
     for (let round = 0; round < 3600; round++) {
       await new Promise((resolve) => setTimeout(resolve, round < 8 ? 600 : 1200));
       job = await api(`/api/admin/update/jobs/${encodeURIComponent(started.id)}`);
-      setLoadingProgress(Number(job.progress || 1), job.message || "正在下载最新版", `目标版本 V${job.latest_version || state.updateRelease.latest_version} · 数据目录保持原样`);
+      setLoadingProgress(Number(job.progress || 1), job.message || "正在下载最新版", `目标版本 V${job.latest_version || state.updateRelease.latest_version} · 安装前自动完整备份`);
       if (job.status === "failed") throw new Error(job.error || "更新包下载失败");
       if (job.status === "ready") break;
     }
     if (job.status !== "ready") throw new Error("更新下载等待超时，请重新检查更新");
     loading(false); await new Promise((resolve) => setTimeout(resolve, 380));
-    const accepted = await confirmAction(`V${job.latest_version || state.updateRelease.latest_version} 已下载并通过完整性校验。安装时软件会自动重启，现有数据库、附件、账号、壁纸及模型不会被清除。`, { title: "安装最新版", confirmText: "立即安装并重启", tone: "info", eyebrow: "无损软件更新" });
+    const accepted = await confirmAction(`V${job.latest_version || state.updateRelease.latest_version} 已下载并通过完整性校验。下一步会先自动保存完整备份，再重启更新；全部赛季、人员、组别、账号、发票与附件保持不变。`, { title: "自动备份并更新", confirmText: "备份并立即更新", tone: "info", eyebrow: "无损软件更新" });
     if (!accepted) { toast("更新包已下载，可稍后再次安装"); return; }
-    const result = await api(`/api/admin/update/jobs/${encodeURIComponent(started.id)}/install`, { method: "POST" });
+    const result = await api(`/api/admin/update/jobs/${encodeURIComponent(started.id)}/install`, { method: "POST", body: { backup_before_install: true } });
     toast(result.message || "安装程序已启动", "success", 6000);
   } catch (error) { loading(false); toast(error.message, "error", 7000); $("updateStatus").className = "update-status error"; $("updateStatus").textContent = error.message; }
 }
@@ -1820,6 +1853,7 @@ function setupEvents() {
   $("downloadBackupBtn").addEventListener("click", downloadBackup); $("restoreBackupInput").addEventListener("change", (event) => restoreBackup(event.target.files[0])); $("deleteDemoBtn").addEventListener("click", deleteDemo);
   $("openUpdateBtn").addEventListener("click", openUpdateDialog); $("checkUpdateBtn").addEventListener("click", () => checkForUpdates(true)); $("installUpdateBtn").addEventListener("click", installLatestUpdate);
   $("autoUpdateCheck").addEventListener("change", (event) => { try { localStorage.setItem(AUTO_UPDATE_STORAGE_KEY, event.target.checked ? "1" : "0"); } catch (_) { /* 当前会话仍可使用 */ } toast(event.target.checked ? "已启用每日自动检查更新" : "已关闭启动后自动检查"); });
+  $("updateInstallMode").addEventListener("change", (event) => applyUpdateInstallMode(event.target.value, true));
   $$('[data-close]').forEach((button) => button.addEventListener("click", () => $(button.dataset.close).close()));
   $$("dialog").forEach((dialog) => dialog.addEventListener("click", (event) => {
     if (event.target !== dialog) return;

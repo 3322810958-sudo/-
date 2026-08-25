@@ -14,6 +14,7 @@ from urllib.request import urlopen
 import uvicorn
 
 from . import __version__
+from .config import RUNTIME_HOME
 
 
 class DesktopApi:
@@ -62,8 +63,7 @@ def available_port(host: str, preferred: int) -> int:
 
 def main() -> None:
     multiprocessing.freeze_support()
-    default_home = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parents[1]
-    runtime_home = Path(os.environ.get("YXRT_HOME", default_home)).resolve()
+    runtime_home = RUNTIME_HOME
     runtime_home.mkdir(parents=True, exist_ok=True)
     # Keep model paths relative on Windows. Paddle's native runtime can fail
     # when an absolute model path contains Chinese characters.

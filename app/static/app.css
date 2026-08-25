@@ -605,6 +605,10 @@ html[data-theme="warm"] .race-track { border-color: #463b30; }
 .update-current { display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 15px; margin-bottom: 12px; border: 1px solid rgba(var(--accent-rgb),.24); background: rgba(var(--accent-rgb),.055); }
 .update-current span { display: block; color: var(--muted); font-size: 10px; }
 .update-current strong { display: block; margin-top: 4px; color: var(--accent); font: 900 22px/1 Bahnschrift, sans-serif; }
+.update-mode-choice { display: grid; grid-template-columns: 92px minmax(220px,1fr); align-items: center; gap: 8px 12px; margin-bottom: 12px; padding: 13px 15px; border: 1px solid var(--line); background: var(--surface-soft); }
+.update-mode-choice > span { color: var(--text); font-weight: 800; font-size: 11px; }
+.update-mode-choice select { width: 100%; }
+.update-mode-choice small { grid-column: 2; color: var(--muted); line-height: 1.55; }
 .update-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
 .update-status { min-height: 42px; padding: 11px 13px; margin-bottom: 13px; color: var(--muted); border: 1px solid var(--line); background: var(--surface-soft); font-size: 11px; line-height: 1.6; }
 .update-status.good { color: var(--green); border-color: rgba(97,231,134,.26); }
@@ -638,6 +642,8 @@ html[data-theme="light"] .race-stage > img { filter: drop-shadow(0 7px 9px rgba(
   .race-loader-copy b { font-size: 21px; }
   .loading-car-editor { grid-template-columns: 1fr; }
   .update-current { align-items: flex-start; flex-direction: column; }
+  .update-mode-choice { grid-template-columns: 1fr; }
+  .update-mode-choice small { grid-column: 1; }
 }
 
 /* V2.2.1 season isolation and creator credits */

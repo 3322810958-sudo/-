@@ -4,9 +4,9 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#07101b">
-  <title>燕翔车队经费管理系统 V2.2.3</title>
+  <title>燕翔车队经费管理系统 V2.2.4</title>
   <link rel="icon" href="/static/assets/team-logo.png">
-  <link rel="stylesheet" href="/static/app.css?v=2.2.3">
+  <link rel="stylesheet" href="/static/app.css?v=2.2.4">
 </head>
 <body>
   <div id="backgroundLayer" class="background-layer"><video id="appBackgroundVideo" muted loop autoplay playsinline></video></div>
@@ -34,7 +34,7 @@
       <div class="login-brand">
         <img src="/static/assets/team-logo.png" alt="燕翔车队队标">
         <div>
-          <p class="eyebrow">赛车运营 · V2.2.3</p>
+          <p class="eyebrow">赛车运营 · V2.2.4</p>
           <h1><span id="loginTeamName">燕翔车队</span><br><span>经费管理系统</span></h1>
         </div>
       </div>
@@ -76,7 +76,7 @@
         <div id="syncLamp" class="status-lamp"></div>
         <div><strong id="syncLabel">本地模式</strong><small id="syncDetail">数据安全保存在本机</small></div>
       </div>
-      <div class="sidebar-foot"><span>燕翔车队经费</span><span id="versionLabel">V2.2.3</span></div>
+      <div class="sidebar-foot"><span>燕翔车队经费</span><span id="versionLabel">V2.2.4</span></div>
     </aside>
 
     <div class="content-shell">
@@ -197,7 +197,7 @@
             <article class="panel setting-card" data-admin><div class="setting-icon">壁纸</div><div><h3>界面、壁纸与登录轮播</h3><p>连接 Wallpaper Engine，或上传图片、动图和视频。</p><button id="openAppearanceBtn" class="btn secondary">配置界面</button></div></article>
             <article class="panel setting-card" data-admin><div class="setting-icon">分类</div><div><h3>发票智能分类</h3><p>编辑离线关键词规则，并结合商家历史选择自动学习。</p><button id="openClassificationBtn" class="btn secondary">管理识别规则</button></div></article>
             <article class="panel setting-card" data-admin><div class="setting-icon">↕</div><div><h3>云端自动同步</h3><p id="syncSettingText">未配置云端服务器。</p><button id="openSyncBtn" class="btn secondary">配置同步</button></div></article>
-            <article class="panel setting-card" data-admin><div class="setting-icon">备份</div><div><h3>备份与恢复</h3><p>完整备份数据库和全部附件，并主动选择保存位置。</p><div class="inline-actions"><button id="downloadBackupBtn" type="button" class="btn secondary">下载备份</button><label class="btn danger subtle">恢复备份<input id="restoreBackupInput" type="file" accept=".zip" hidden></label></div></div></article>
+            <article class="panel setting-card" data-admin><div class="setting-icon">备份</div><div><h3>备份与恢复</h3><p>完整保留全部赛季、人员、组别、账号、发票和附件，并附可查看清单。</p><div class="inline-actions"><button id="downloadBackupBtn" type="button" class="btn secondary">下载完整备份</button><label class="btn danger subtle">恢复备份<input id="restoreBackupInput" type="file" accept=".zip" hidden></label></div></div></article>
             <article class="panel setting-card" data-admin><div class="setting-icon">演示</div><div><h3>演示数据</h3><p>只清除初始演示记录，不影响正式数据。</p><button id="deleteDemoBtn" class="btn danger subtle">清除演示数据</button></div></article>
             <article class="panel setting-card"><div class="setting-icon">识别</div><div><h3>离线文字识别</h3><p>优先读取 PDF 文本，扫描件使用本地识别引擎，不上传第三方。</p><span class="setting-state good">本机运行</span></div></article>
             <article class="panel setting-card"><div class="setting-icon">版本</div><div><h3>更新日志与无损自动更新</h3><p>所有成员均可检查并一键升级；数据库、附件、账号与界面设置保持不变。</p><button id="openUpdateBtn" class="btn secondary">版本与更新</button></div></article>
@@ -452,7 +452,8 @@
   <dialog id="updateDialog" class="modal">
     <div class="modal-card">
       <header><div><p class="eyebrow">版本管理</p><h3>更新日志与自动更新</h3></div><button type="button" class="dialog-close" data-close="updateDialog">×</button></header>
-      <div class="update-current"><div><span>当前版本</span><strong id="updateCurrentVersion">V2.2.3</strong></div><label class="mini-switch"><input id="autoUpdateCheck" type="checkbox" checked><span>启动后自动检查</span></label></div>
+      <div class="update-current"><div><span>当前版本</span><strong id="updateCurrentVersion">V2.2.4</strong></div><label class="mini-switch"><input id="autoUpdateCheck" type="checkbox" checked><span>启动后自动检查</span></label></div>
+      <label class="update-mode-choice"><span>更新方式</span><select id="updateInstallMode"><option value="auto">自动完整备份并更新（推荐）</option><option value="manual">手动下载补丁包并覆盖</option></select><small id="updateModeHint">安装前自动备份全部赛季、人员、组别、账号、发票与附件，再重启更新。</small></label>
       <div class="update-actions"><button id="checkUpdateBtn" type="button" class="btn secondary">检查 GitHub 新版本</button><a id="updateReleaseLink" class="btn secondary hidden" target="_blank" rel="noopener">查看发布页面</a><button id="installUpdateBtn" type="button" class="btn primary hidden">一键更新到最新版</button></div>
       <div id="updateStatus" class="update-status">正在读取本地更新日志……</div>
       <div id="changelogList" class="changelog-list"></div>
@@ -477,6 +478,6 @@
       <small id="loadingDetail">任务正在本机运行，请勿关闭软件</small>
     </div>
   </div>
-  <script src="/static/app.js?v=2.2.3"></script>
+  <script src="/static/app.js?v=2.2.4"></script>
 </body>
 </html>

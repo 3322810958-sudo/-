@@ -454,9 +454,22 @@ def test_v222_pdf_export_defaults_and_member_update_permissions(monkeypatch):
         finally:
             main_module.APP_MODE = old_mode
 
+    install_events = []
+
+    def fake_update_backup(path):
+        install_events.append("backup")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"PK")
+        return path
+
+    def fake_update_install(job_id, user_id):
+        install_events.append("install")
+        return {"ok": True, "message": "测试安装", "user_id": user_id}
+
     monkeypatch.setattr(main_module, "start_update_download", lambda user_id: {"id": "update_member", "created_by": user_id, "status": "downloading"})
     monkeypatch.setattr(main_module, "get_update_job", lambda job_id: {"id": job_id, "created_by": "user_viewer", "status": "ready", "progress": 100})
-    monkeypatch.setattr(main_module, "schedule_update_install", lambda job_id, user_id: {"ok": True, "message": "测试安装", "user_id": user_id})
+    monkeypatch.setattr(main_module, "_create_backup_archive", fake_update_backup)
+    monkeypatch.setattr(main_module, "schedule_update_install", fake_update_install)
     with TestClient(app) as viewer:
         payload, viewer_headers = login(viewer, "viewer", "View@2026")
         denied_defaults = viewer.put("/api/admin/invoice-defaults", json={}, headers=viewer_headers)
@@ -466,3 +479,86 @@ def test_v222_pdf_export_defaults_and_member_update_permissions(monkeypatch):
         monkeypatch.setattr(main_module, "get_update_job", lambda job_id: {"id": job_id, "created_by": payload["user"]["id"], "status": "ready", "progress": 100})
         assert viewer.get("/api/admin/update/jobs/update_member").status_code == 200
         assert viewer.post("/api/admin/update/jobs/update_member/install", headers=viewer_headers).status_code == 200
+        assert install_events == ["backup", "install"]
+
+        def failed_backup(_):
+            install_events.append("backup_failed")
+            raise OSError("磁盘空间不足")
+
+        monkeypatch.setattr(main_module, "_create_backup_archive", failed_backup)
+        failed_install = viewer.post("/api/admin/update/jobs/update_member/install", headers=viewer_headers)
+        assert failed_install.status_code == 400
+        assert "已停止更新" in failed_install.json()["detail"]
+        assert install_events == ["backup", "install", "backup_failed"]
+
+
+def test_v224_backup_preserves_members_departments_and_account_links():
+    import app.main as main_module
+
+    with TestClient(app) as admin:
+        _, headers = login(admin, "admin", "YXRT@2026")
+        department = admin.post("/api/admin/departments", json={"name": "备份验证组"}, headers=headers)
+        assert department.status_code == 200, department.text
+        member = admin.post(
+            "/api/members",
+            json={
+                "name": "备份验证成员", "department": "备份验证组", "student_id": "YXRT-224",
+                "phone": "13800002224", "email": "backup224@example.com", "avatar_color": "#27d3ff",
+            },
+            headers=headers,
+        )
+        assert member.status_code == 200, member.text
+        member_id = member.json()["id"]
+        account = admin.post(
+            "/api/admin/users",
+            json={
+                "username": "backup224", "display_name": "备份验证成员", "member_id": member_id,
+                "role": "member", "password": "Backup224",
+            },
+            headers=headers,
+        )
+        assert account.status_code == 200, account.text
+        user_id = account.json()["id"]
+
+        with main_module.connect() as conn:
+            original_member = dict(conn.execute("SELECT * FROM members WHERE id=?", (member_id,)).fetchone())
+            original_user = dict(conn.execute("SELECT * FROM users WHERE id=?", (user_id,)).fetchone())
+            original_department = dict(conn.execute("SELECT * FROM departments WHERE name='备份验证组'").fetchone())
+
+        backup = admin.get("/api/admin/backup")
+        assert backup.status_code == 200, backup.text
+        with zipfile.ZipFile(io.BytesIO(backup.content)) as archive:
+            names = set(archive.namelist())
+            assert "database.sqlite" in names
+            assert "可查看数据/人员信息.csv" in names
+            assert "可查看数据/组别信息.csv" in names
+            assert "可查看数据/账号关联.csv" in names
+            personnel = archive.read("可查看数据/人员信息.csv").decode("utf-8-sig")
+            assert "备份验证成员" in personnel and "备份验证组" in personnel and "backup224" in personnel
+            manifest = archive.read("manifest.json").decode("utf-8")
+            assert '"database_complete": true' in manifest
+
+        with main_module.transaction() as conn:
+            conn.execute("UPDATE members SET name='被错误覆盖',department='错误组' WHERE id=?", (member_id,))
+            conn.execute("UPDATE users SET display_name='被错误覆盖',member_id=NULL WHERE id=?", (user_id,))
+            conn.execute("UPDATE departments SET name='错误组' WHERE id=?", (original_department["id"],))
+
+        restored = admin.post(
+            "/api/admin/restore-backup",
+            files={"file": ("backup.zip", backup.content, "application/zip")},
+            headers=headers,
+        )
+        assert restored.status_code == 200, restored.text
+        assert admin.get("/api/bootstrap").status_code == 401
+
+        with main_module.connect() as conn:
+            restored_member = dict(conn.execute("SELECT * FROM members WHERE id=?", (member_id,)).fetchone())
+            restored_user = dict(conn.execute("SELECT * FROM users WHERE id=?", (user_id,)).fetchone())
+            restored_department = dict(conn.execute("SELECT * FROM departments WHERE id=?", (original_department["id"],)).fetchone())
+        assert restored_member == original_member
+        assert restored_user == original_user
+        assert restored_department == original_department
+
+        with TestClient(app) as member_client:
+            payload, _ = login(member_client, "backup224", "Backup224")
+            assert payload["user"]["display_name"] == "备份验证成员"

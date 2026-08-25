@@ -1,5 +1,5 @@
 ﻿param(
-  [string]$Version = "2.2.3",
+  [string]$Version = "2.2.4",
   [string]$PythonPath = "",
   [switch]$SkipBuild,
   [switch]$SkipTutorialPdf,
@@ -59,8 +59,7 @@ $updateZip = Join-Path $releaseDir "燕翔车队经费管理系统_V$Version`_Wi
 $tempRoot = [IO.Path]::GetFullPath([IO.Path]::GetTempPath())
 $patchStage = Join-Path $tempRoot "yxrt-update-stage-$PID-$Version"
 
-$outputsToReplace = @($updateZip, "$updateZip.sha256")
-if (-not $PatchOnly) { $outputsToReplace += @($fullZip, "$fullZip.sha256") }
+$outputsToReplace = @($updateZip, "$updateZip.sha256", $fullZip, "$fullZip.sha256")
 foreach ($path in $outputsToReplace) {
   if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Force }
 }

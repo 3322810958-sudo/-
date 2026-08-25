@@ -62,3 +62,12 @@ def test_v222_previews_pdf_backup_and_defaults_are_wired() -> None:
     assert "downloadBackup" in JS
     assert "openAttachmentViewer" in JS
     assert "showSaveFilePicker" in JS
+
+
+def test_v224_update_modes_and_automatic_backup_are_wired() -> None:
+    assert 'id="updateInstallMode"' in HTML
+    assert 'value="auto"' in HTML
+    assert 'value="manual"' in HTML
+    assert "UPDATE_INSTALL_MODE_KEY" in JS
+    assert "backup_before_install: true" in JS
+    assert "自动完整备份并更新" in HTML

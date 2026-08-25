@@ -460,7 +460,8 @@ def _migrate_season_schema(conn: sqlite3.Connection) -> None:
     ).fetchone():
         set_setting(conn, "current_season_id", DEFAULT_SEASON_ID, sync=False)
 
-    department_names = set(DEFAULT_DEPARTMENTS)
+    has_department_history = bool(conn.execute("SELECT 1 FROM departments LIMIT 1").fetchone())
+    department_names = set() if has_department_history else set(DEFAULT_DEPARTMENTS)
     department_names.update(
         str(row[0]).strip() for row in conn.execute(
             "SELECT DISTINCT department FROM members WHERE trim(department)<>''"

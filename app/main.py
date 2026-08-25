@@ -57,6 +57,7 @@ from .config import (
     APP_DIR,
     APP_MODE,
     DB_PATH,
+    PROGRAM_DIR,
     RUNTIME_HOME,
     SUPPORTED_EXTENSIONS,
     SYNC_INTERVAL_SECONDS,
@@ -90,7 +91,7 @@ from .updater import check_for_update, get_update_job, schedule_update_install, 
 from .wallpaper_engine import scan_wallpapers, wallpaper_item
 
 
-STATIC_DIR = RUNTIME_HOME / "web" if (RUNTIME_HOME / "web" / "index.html").is_file() else APP_DIR / "static"
+STATIC_DIR = PROGRAM_DIR / "web" if (PROGRAM_DIR / "web" / "index.html").is_file() else APP_DIR / "static"
 STOP_EVENT = threading.Event()
 APPEARANCE_SETTING_KEYS = (
     "team_name", "background_image", "background_media_id", "background_media_kind",
@@ -219,8 +220,24 @@ async def update_job_status(job_id: str, request: Request) -> dict[str, Any]:
 async def update_install(job_id: str, request: Request) -> dict[str, Any]:
     auth = get_auth(request)
     require_csrf(request, auth)
+    job = get_update_job(job_id)
+    if not job or job.get("created_by") != auth.user["id"]:
+        raise HTTPException(status_code=404, detail="更新任务不存在")
+    backup_dir = DB_PATH.parent / "backups"
+    stamp = utc_now().replace(":", "-")[:19]
+    version = re.sub(r"[^0-9A-Za-z._-]", "", str(job.get("latest_version") or "latest")) or "latest"
+    backup_path = backup_dir / f"自动更新前完整备份_V{__version__}_to_V{version}_{stamp}.zip"
     try:
-        return schedule_update_install(job_id, auth.user["id"])
+        backup_dir.mkdir(parents=True, exist_ok=True)
+        await asyncio.to_thread(_create_backup_archive, backup_path)
+    except (OSError, sqlite3.Error, zipfile.BadZipFile, RuntimeError) as exc:
+        backup_path.unlink(missing_ok=True)
+        raise HTTPException(status_code=400, detail=f"自动完整备份失败，已停止更新：{exc}") from exc
+    try:
+        result = schedule_update_install(job_id, auth.user["id"])
+        result["backup_path"] = str(backup_path)
+        result["message"] = "完整备份已自动保存，更新安装程序已启动，软件将自动重启"
+        return result
     except RuntimeError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -2034,12 +2051,89 @@ async def export_pdf(payload: dict[str, Any], request: Request, background_tasks
     )
 
 
+def _backup_csv(headers: list[str], rows: list[tuple[Any, ...]]) -> bytes:
+    output = io.StringIO(newline="")
+    writer = csv.writer(output, lineterminator="\r\n")
+    writer.writerow(headers)
+    writer.writerows(rows)
+    return ("\ufeff" + output.getvalue()).encode("utf-8")
+
+
+def _backup_readable_exports(database_path: Path) -> tuple[dict[str, bytes], dict[str, int]]:
+    conn = sqlite3.connect(str(database_path))
+    conn.row_factory = sqlite3.Row
+    try:
+        tables = [str(row[0]) for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
+        ).fetchall()]
+        counts = {table: int(conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]) for table in tables}
+        personnel = [tuple(row) for row in conn.execute(
+            """SELECT s.name,m.name,m.department,m.student_id,m.phone,m.email,
+            CASE WHEN m.deleted_at IS NOT NULL THEN '已删除' WHEN m.active=1 THEN '启用' ELSE '停用' END,
+            COALESCE(GROUP_CONCAT(u.username,'；'),''),
+            COALESCE(GROUP_CONCAT(CASE WHEN u.id IS NULL THEN NULL WHEN u.role='admin' THEN '管理员' WHEN u.role='viewer' THEN '公共查看' ELSE '成员' END,'；'),''),
+            COALESCE(GROUP_CONCAT(CASE WHEN u.id IS NULL THEN NULL WHEN u.deleted_at IS NOT NULL THEN '已删除' WHEN u.active=1 THEN '启用' ELSE '停用' END,'；'),''),
+            m.created_at,m.updated_at
+            FROM members m JOIN seasons s ON s.id=m.season_id
+            LEFT JOIN users u ON u.member_id=m.id
+            GROUP BY m.id ORDER BY s.sort_order DESC,m.sort_order,m.name"""
+        ).fetchall()]
+        departments = [tuple(row) for row in conn.execute(
+            """SELECT d.name,d.sort_order,
+            (SELECT COUNT(*) FROM members m WHERE m.department=d.name AND m.deleted_at IS NULL),
+            CASE WHEN d.deleted_at IS NULL THEN '保留' ELSE '已删除' END,d.created_at,d.updated_at
+            FROM departments d ORDER BY d.sort_order,d.name"""
+        ).fetchall()]
+        accounts = [tuple(row) for row in conn.execute(
+            """SELECT u.username,u.display_name,
+            CASE u.role WHEN 'admin' THEN '管理员' WHEN 'viewer' THEN '公共查看' ELSE '成员' END,
+            COALESCE(m.name,''),COALESCE(s.name,''),
+            CASE WHEN u.deleted_at IS NOT NULL THEN '已删除' WHEN u.active=1 THEN '启用' ELSE '停用' END,
+            CASE WHEN u.must_change_password=1 THEN '是' ELSE '否' END,u.created_at,u.updated_at
+            FROM users u LEFT JOIN members m ON m.id=u.member_id LEFT JOIN seasons s ON s.id=m.season_id
+            ORDER BY CASE u.role WHEN 'admin' THEN 0 WHEN 'viewer' THEN 1 ELSE 2 END,u.username"""
+        ).fetchall()]
+        invoices = [tuple(row) for row in conn.execute(
+            """SELECT s.name,i.invoice_no,i.vendor,i.invoice_date,printf('%.2f',i.total_amount_cents/100.0),
+            COALESCE(c.name,''),i.product_type,COALESCE(m.name,''),i.burden_type,
+            COALESCE(f.name,''),i.reimbursement_status,printf('%.2f',i.reimbursed_amount_cents/100.0),
+            i.reimbursement_date,COALESCE(u.display_name,''),i.created_at,i.updated_at
+            FROM invoices i JOIN seasons s ON s.id=i.season_id
+            LEFT JOIN categories c ON c.id=i.category_id LEFT JOIN members m ON m.id=i.payer_member_id
+            LEFT JOIN funding_sources f ON f.id=i.funding_source_id LEFT JOIN users u ON u.id=i.created_by
+            ORDER BY s.sort_order DESC,i.invoice_date DESC,i.created_at DESC"""
+        ).fetchall()]
+        exports = {
+            "可查看数据/人员信息.csv": _backup_csv(
+                ["所属赛季", "姓名", "组别", "学号", "电话", "邮箱", "成员状态", "登录账号", "账号角色", "账号状态", "创建时间", "更新时间"],
+                personnel,
+            ),
+            "可查看数据/组别信息.csv": _backup_csv(
+                ["组别名称", "排序", "当前成员数", "状态", "创建时间", "更新时间"], departments,
+            ),
+            "可查看数据/账号关联.csv": _backup_csv(
+                ["登录账号", "显示名称", "角色", "关联成员", "所属赛季", "账号状态", "下次登录修改密码", "创建时间", "更新时间"],
+                accounts,
+            ),
+            "可查看数据/发票明细.csv": _backup_csv(
+                ["所属赛季", "发票号码", "销售方", "开票日期", "总金额", "分类", "产品类型", "垫付成员", "承担方式", "资金来源", "报销状态", "已报销金额", "报销日期", "提交人", "上传日期", "更新时间"],
+                invoices,
+            ),
+        }
+        return exports, counts
+    finally:
+        conn.close()
+
+
 def _create_backup_archive(output_path: Path | None = None) -> Path:
     if output_path is None:
         fd, name = tempfile.mkstemp(prefix="yxrt_backup_", suffix=".zip", dir=TMP_DIR)
         os.close(fd)
         output_path = Path(name)
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    fd, archive_temp_name = tempfile.mkstemp(prefix=f".{output_path.stem}_", suffix=".partial", dir=output_path.parent)
+    os.close(fd)
+    archive_temp = Path(archive_temp_name)
     fd, db_temp_name = tempfile.mkstemp(prefix="yxrt_db_", suffix=".sqlite", dir=TMP_DIR)
     os.close(fd)
     db_temp = Path(db_temp_name)
@@ -2051,16 +2145,32 @@ def _create_backup_archive(output_path: Path | None = None) -> Path:
                 source.backup(target)
             finally:
                 target.close(); source.close()
-        manifest = {"product": "燕翔车队经费管理系统", "version": __version__, "created_at": utc_now()}
-        with zipfile.ZipFile(output_path, "w", allowZip64=True) as archive:
+        exports, row_counts = _backup_readable_exports(db_temp)
+        manifest = {
+            "product": "燕翔车队经费管理系统",
+            "version": __version__,
+            "created_at": utc_now(),
+            "database_complete": True,
+            "includes": ["全部赛季与人员", "组别与账号关联", "发票与分摊结算", "设置与回溯记录", "全部上传附件"],
+            "row_counts": row_counts,
+        }
+        with zipfile.ZipFile(archive_temp, "w", allowZip64=True) as archive:
             archive.write(db_temp, "database.sqlite", compress_type=zipfile.ZIP_DEFLATED)
             archive.writestr("manifest.json", json.dumps(manifest, ensure_ascii=False, indent=2), compress_type=zipfile.ZIP_DEFLATED)
+            archive.writestr("可查看数据/备份内容清单.json", json.dumps(manifest, ensure_ascii=False, indent=2), compress_type=zipfile.ZIP_DEFLATED)
+            for name, content in exports.items():
+                archive.writestr(name, content, compress_type=zipfile.ZIP_DEFLATED)
             for path in UPLOAD_DIR.rglob("*"):
                 if path.is_file():
                     archive.write(path, Path("uploads") / path.relative_to(UPLOAD_DIR), compress_type=zipfile.ZIP_STORED)
+        with zipfile.ZipFile(archive_temp) as check:
+            if check.testzip() is not None or not {"database.sqlite", "manifest.json", "可查看数据/人员信息.csv"}.issubset(check.namelist()):
+                raise OSError("完整备份压缩包校验失败")
+        archive_temp.replace(output_path)
         return output_path
     finally:
         db_temp.unlink(missing_ok=True)
+        archive_temp.unlink(missing_ok=True)
 
 
 @app.get("/api/admin/backup")
@@ -2105,6 +2215,9 @@ async def backup_save_to_desktop(payload: dict[str, Any], request: Request) -> d
 
 def _restore_backup(path: Path, user_id: str) -> None:
     with zipfile.ZipFile(path) as archive:
+        damaged = archive.testzip()
+        if damaged is not None:
+            raise ValueError(f"备份压缩包中的文件已损坏：{Path(damaged).name}")
         names = set(archive.namelist())
         if "database.sqlite" not in names or "manifest.json" not in names:
             raise ValueError("备份包缺少数据库或清单文件")
@@ -2120,11 +2233,24 @@ def _restore_backup(path: Path, user_id: str) -> None:
             check = sqlite3.connect(str(source_path))
             try:
                 required = {"users", "members", "invoices", "invoice_splits", "snapshots"}
+                if manifest.get("database_complete") is True:
+                    required.update({"seasons", "departments", "categories", "funding_sources", "settlements", "app_settings"})
                 tables = {row[0] for row in check.execute("SELECT name FROM sqlite_master WHERE type='table'")}
                 if not required.issubset(tables):
                     raise ValueError("备份数据库结构不完整")
+                integrity = str(check.execute("PRAGMA integrity_check").fetchone()[0])
+                if integrity.lower() != "ok":
+                    raise ValueError("备份数据库完整性检查失败")
+                if check.execute("PRAGMA foreign_key_check").fetchone():
+                    raise ValueError("备份中的人员、账号或发票关联关系不完整")
                 if not check.execute("SELECT 1 FROM users WHERE role='admin' AND active=1 LIMIT 1").fetchone():
                     raise ValueError("备份中没有有效管理员账号")
+                declared_counts = manifest.get("row_counts") if isinstance(manifest.get("row_counts"), dict) else {}
+                for table in ("seasons", "departments", "users", "members", "invoices"):
+                    if table in declared_counts:
+                        actual_count = int(check.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
+                        if actual_count != int(declared_counts[table]):
+                            raise ValueError(f"备份中的{table}记录数量与清单不一致")
             finally:
                 check.close()
 
@@ -2137,6 +2263,8 @@ def _restore_backup(path: Path, user_id: str) -> None:
                 destination_db = connect()
                 try:
                     source_db.backup(destination_db)
+                    if destination_db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='sessions'").fetchone():
+                        destination_db.execute("DELETE FROM sessions")
                 finally:
                     destination_db.close(); source_db.close()
             for member in archive.infolist():

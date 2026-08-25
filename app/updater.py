@@ -206,13 +206,13 @@ $newExe = Join-Path $source $ExecutableName
 if (-not (Test-Path -LiteralPath $newExe -PathType Leaf)) { throw '更新包中缺少主程序' }
 $backup = Join-Path $target ('.update-backup-' + (Get-Date -Format 'yyyyMMddHHmmss'))
 New-Item -ItemType Directory -Path $backup -Force | Out-Null
-$preserve = @('data','uploads','models','tmp','.env')
+$preserve = @('data','uploads','models','tmp','backups','.env')
 $installed = [Collections.Generic.List[string]]::new()
 $currentName = ''
 try {
   foreach ($item in Get-ChildItem -LiteralPath $source) {
     $currentName = $item.Name
-    if ($preserve -contains $item.Name -and (Test-Path -LiteralPath (Join-Path $target $item.Name))) { continue }
+    if ($preserve -contains $item.Name) { continue }
     $destination = Join-Path $target $item.Name
     if (Test-Path -LiteralPath $destination) {
       Move-Item -LiteralPath $destination -Destination (Join-Path $backup $item.Name) -Force
