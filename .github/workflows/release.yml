@@ -35,52 +35,18 @@ jobs:
         run: python -m pytest tests -q --import-mode=importlib -p no:cacheprovider
       - name: 准备离线 OCR 模型
         run: python scripts/prefetch_ocr_models.py
-      - name: 构建 Windows 软件
-        run: python -m PyInstaller --noconfirm --clean YanxiangExpenseV2.spec
-      - name: 加入模型与使用说明
+      - name: 构建完整版、轻量无损补丁与校验文件
         shell: pwsh
         run: |
-          $target = "dist\燕翔车队经费管理系统"
-          Copy-Item -LiteralPath "models" -Destination (Join-Path $target "models") -Recurse -Force
-          Copy-Item -LiteralPath "README.md" -Destination $target -Force
-          Copy-Item -LiteralPath "README_FIRST.txt" -Destination $target -Force
-          Copy-Item -LiteralPath "CHANGELOG.md" -Destination $target -Force
-          New-Item -ItemType Directory -Path (Join-Path $target "使用教程") -Force | Out-Null
-          Copy-Item -LiteralPath "docs\运行与使用说明.md" -Destination (Join-Path $target "使用教程") -Force
-          if ((Test-Path "C:\Windows\Fonts\msyh.ttc") -and (Test-Path "C:\Windows\Fonts\msyhbd.ttc")) {
-            python scripts/create_tutorial_pdf.py
-            Copy-Item -LiteralPath "output\pdf\燕翔车队经费管理系统_V2.2_使用教程.pdf" -Destination (Join-Path $target "使用教程") -Force
-          }
-      - name: 生成完整版、无损更新包与校验文件
-        shell: pwsh
-        run: |
-          $target = "dist\燕翔车队经费管理系统"
           $tag = "${{ github.event.inputs.version || github.ref_name }}"
-          $fullPackage = "YanxiangExpense_${tag}_WindowsFull.zip"
-          $updatePackage = "YanxiangExpense_${tag}_WindowsUpdate.zip"
-          Compress-Archive -Path "$target\*" -DestinationPath $fullPackage -CompressionLevel Optimal
-          $patchStage = Join-Path $env:RUNNER_TEMP "yanxiang-update"
-          New-Item -ItemType Directory -Path $patchStage -Force | Out-Null
-          $preserve = @("data", "uploads", "models", "tmp", ".env")
-          foreach ($item in Get-ChildItem -LiteralPath $target) {
-            if ($preserve -contains $item.Name) { continue }
-            Copy-Item -LiteralPath $item.FullName -Destination (Join-Path $patchStage $item.Name) -Recurse -Force
-          }
-          Copy-Item -LiteralPath "docs\补丁安装说明.txt" -Destination $patchStage -Force
-          Compress-Archive -Path "$patchStage\*" -DestinationPath $updatePackage -CompressionLevel Optimal
-          foreach ($package in @($fullPackage, $updatePackage)) {
-            $hash = (Get-FileHash -LiteralPath $package -Algorithm SHA256).Hash.ToLowerInvariant()
-            "$hash  $package" | Out-File -LiteralPath "$package.sha256" -Encoding ascii
-          }
-          "FULL_PACKAGE=$fullPackage" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-          "UPDATE_PACKAGE=$updatePackage" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          $version = $tag.TrimStart("v")
+          & .\scripts\build_release.ps1 -Version $version -SkipTutorialPdf
+          if ($LASTEXITCODE -ne 0) { throw "Windows 发布包构建失败" }
       - name: 发布 GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.event.inputs.version || github.ref_name }}
           generate_release_notes: true
           files: |
-            ${{ env.FULL_PACKAGE }}
-            ${{ env.FULL_PACKAGE }}.sha256
-            ${{ env.UPDATE_PACKAGE }}
-            ${{ env.UPDATE_PACKAGE }}.sha256
+            release/*.zip
+            release/*.zip.sha256
