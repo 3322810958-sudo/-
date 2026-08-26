@@ -4,9 +4,9 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#07101b">
-  <title>燕翔车队经费管理系统 V2.2.4</title>
+  <title>燕翔车队经费管理系统 V2.3.0</title>
   <link rel="icon" href="/static/assets/team-logo.png">
-  <link rel="stylesheet" href="/static/app.css?v=2.2.4">
+  <link rel="stylesheet" href="/static/app.css?v=2.3.0">
 </head>
 <body>
   <div id="backgroundLayer" class="background-layer"><video id="appBackgroundVideo" muted loop autoplay playsinline></video></div>
@@ -34,7 +34,7 @@
       <div class="login-brand">
         <img src="/static/assets/team-logo.png" alt="燕翔车队队标">
         <div>
-          <p class="eyebrow">赛车运营 · V2.2.4</p>
+          <p class="eyebrow">赛车运营 · V2.3.0</p>
           <h1><span id="loginTeamName">燕翔车队</span><br><span>经费管理系统</span></h1>
         </div>
       </div>
@@ -43,6 +43,7 @@
         <label>账号<input id="loginUsername" autocomplete="username" required value="admin"></label>
         <label>密码<div class="password-field"><input id="loginPassword" type="password" autocomplete="current-password" required value="YXRT@2026"><button id="toggleLoginPassword" type="button" aria-label="显示密码" aria-pressed="false">显示</button></div></label>
         <button class="btn primary wide" type="submit"><span>进入系统</span><b>→</b></button>
+        <button id="forgotPasswordBtn" class="login-link-button" type="button">忘记账号或密码？使用原始管理员凭据重置</button>
         <p id="loginError" class="form-error" role="alert"></p>
       </form>
       <details class="account-hint">
@@ -76,7 +77,7 @@
         <div id="syncLamp" class="status-lamp"></div>
         <div><strong id="syncLabel">本地模式</strong><small id="syncDetail">数据安全保存在本机</small></div>
       </div>
-      <div class="sidebar-foot"><span>燕翔车队经费</span><span id="versionLabel">V2.2.4</span></div>
+      <div class="sidebar-foot"><span>燕翔车队经费</span><span id="versionLabel">V2.3.0</span></div>
     </aside>
 
     <div class="content-shell">
@@ -102,6 +103,11 @@
           <button id="logoutBtn" class="icon-button" title="退出登录">↪</button>
         </div>
       </header>
+      <div id="globalActionBar" class="global-action-bar hidden" aria-label="当前表单操作">
+        <button id="globalSaveBtn" type="button" title="保存当前表单（Ctrl+S）">保存</button>
+        <button id="globalUndoBtn" type="button" title="撤销当前表单修改（Ctrl+Z）" disabled>撤销</button>
+        <button id="globalRedoBtn" type="button" title="恢复当前表单修改（Ctrl+Y）" disabled>恢复</button>
+      </div>
 
       <main class="main-content">
         <div id="seasonReadOnlyBanner" class="season-readonly-banner hidden"><b>历史赛季只读</b><span>当前正在查看已归档赛季，发票、成员和结算记录不能修改。</span></div>
@@ -148,6 +154,7 @@
           </article>
           <article class="panel ledger-panel">
             <div class="ledger-summary"><strong id="invoiceCount">0 条记录</strong><span id="invoiceSum">合计 ¥0.00</span></div>
+            <div class="quality-legend"><span class="low-confidence">低置信度待复核</span><span class="import-failed">导入/识别失败</span><span class="export-failed">导出/转换失败</span></div>
             <div id="batchSelectionBar" class="batch-selection-bar hidden"><strong id="batchSelectedCount">已选择 0 张</strong><span id="batchSelectedSum">合计 ¥0.00</span><div><button id="batchExportSelectedBtn" type="button" class="btn secondary">导出所选</button><button id="batchEditSelectedBtn" type="button" class="btn secondary write-only">批量修改</button><button id="batchDeleteSelectedBtn" type="button" class="btn danger subtle write-only">批量删除</button><button id="batchClearSelectionBtn" type="button" class="btn secondary">取消选择</button></div></div>
             <div class="table-scroll"><table class="ledger-table"><thead><tr><th class="select-cell"><input id="selectAllInvoices" type="checkbox" aria-label="全选当前发票"></th><th>开票 / 上传 / 提交</th><th>发票 / 销售方</th><th>分类</th><th>垫付与分摊</th><th>资金来源</th><th>报销进度</th><th class="numeric">金额</th><th>操作</th></tr></thead><tbody id="invoiceTable"></tbody></table></div>
           </article>
@@ -184,6 +191,7 @@
           <div class="section-toolbar"><div><p class="eyebrow">项目署名</p><h3>创作者名单</h3><p>全赛季共享，无需在新赛季重复添加。</p></div><button id="addCreatorBtn" class="btn primary hidden" data-admin>＋ 添加创作者</button></div>
           <div id="creatorSeasonHeading" class="creator-season-heading"></div>
           <div id="creatorCards" class="creator-cards"></div>
+          <article class="panel reference-credit-panel"><div class="panel-heading"><div><p class="eyebrow">开源与设计参考</p><h3>引用与许可证</h3></div></div><p id="referenceNotice"></p><div id="openSourceReferences" class="reference-credit-list"></div></article>
         </section>
 
         <section id="settingsSection" class="view-section">
@@ -191,6 +199,7 @@
           <div class="settings-grid">
             <article class="panel setting-card" data-admin><div class="setting-icon">赛季</div><div><h3>赛季与长期组别</h3><p>创建、切换、重命名和归档赛季；组别跨赛季保留。</p><button id="openSeasonManagerBtn" class="btn secondary">管理赛季</button></div></article>
             <article class="panel setting-card"><div class="setting-icon">账号</div><div><h3>我的账号</h3><p>修改当前账号与密码。</p><button id="changeCredentialsBtn" class="btn secondary">修改登录信息</button></div></article>
+            <article class="panel setting-card" data-admin><div class="setting-icon">找回</div><div><h3>管理员找回凭据</h3><p>可更换或停用本机原始凭据找回；验证过程限速并写入审计日志。</p><button id="openRecoverySettingsBtn" class="btn secondary">配置找回</button></div></article>
             <article class="panel setting-card"><div class="setting-icon">键</div><div><h3>自定义快捷键</h3><p>为录入、搜索、页面切换和主题切换设置按键组合。</p><button id="openShortcutsBtn" class="btn secondary">配置快捷键</button></div></article>
             <article class="panel setting-card write-only"><div class="setting-icon">选项</div><div><h3>分类与资金来源</h3><p>维护录入发票时可选的费用分类和资金来源。</p><button id="openReferencesBtn" class="btn secondary">管理选项</button></div></article>
             <article class="panel setting-card" data-admin><div class="setting-icon">默认</div><div><h3>录入与批量导入默认值</h3><p>配置默认分类、成员、资金来源、承担方式与批次备注。</p><button id="openInvoiceDefaultsBtn" class="btn secondary">配置默认值</button></div></article>
@@ -201,6 +210,8 @@
             <article class="panel setting-card" data-admin><div class="setting-icon">演示</div><div><h3>演示数据</h3><p>只清除初始演示记录，不影响正式数据。</p><button id="deleteDemoBtn" class="btn danger subtle">清除演示数据</button></div></article>
             <article class="panel setting-card"><div class="setting-icon">识别</div><div><h3>离线文字识别</h3><p>优先读取 PDF 文本，扫描件使用本地识别引擎，不上传第三方。</p><span class="setting-state good">本机运行</span></div></article>
             <article class="panel setting-card"><div class="setting-icon">版本</div><div><h3>更新日志与无损自动更新</h3><p>所有成员均可检查并一键升级；数据库、附件、账号与界面设置保持不变。</p><button id="openUpdateBtn" class="btn secondary">版本与更新</button></div></article>
+            <article class="panel setting-card"><div class="setting-icon">音乐</div><div><h3>个人界面、音频与设置包</h3><p>导入自有或已获授权音乐；顺序、单曲或随机播放。默认静音。</p><button id="openPersonalSettingsBtn" class="btn secondary">个人界面设置</button></div></article>
+            <article class="panel setting-card"><div class="setting-icon">反馈</div><div><h3>问题反馈</h3><p>附件在本机打包，优先邮件发送；失败时进入本机待发送队列。</p><button id="openFeedbackBtn" class="btn secondary">提交问题反馈</button></div></article>
           </div>
         </section>
       </main>
@@ -260,6 +271,11 @@
         <div class="computed-status"><span>自动状态</span><strong id="computedReimbursementStatus">未报销</strong></div>
       </div>
       <label class="full-label"><span>备注</span><textarea id="invoiceNote" rows="3" maxlength="2000" placeholder="用途、采购批次、报销进度或异常说明"></textarea></label>
+      <section class="supporting-attachment-editor">
+        <div class="supporting-heading"><div><b>购物、签字及其他证明附件</b><small>支持图片、PDF、Word、Excel、PPT、文字、视频及压缩包；导出时可追加到发票之后。</small></div><label class="btn secondary media-upload-btn">添加证明<input id="supportingAttachmentFiles" type="file" multiple hidden></label></div>
+        <label class="support-kind-select"><span>本次附件类型</span><select id="supportingAttachmentKind"><option value="shopping">购物证明</option><option value="signature">签字证明</option><option value="other">其他证明</option></select></label>
+        <div id="supportingAttachmentList" class="supporting-attachment-list"><div class="empty-state">保存发票后可以添加证明附件</div></div>
+      </section>
       <footer><button type="button" class="btn secondary" data-close="invoiceDialog">取消</button><button id="saveInvoiceBtn" class="btn primary" type="submit">保存发票记录</button></footer>
     </form>
   </dialog>
@@ -273,6 +289,7 @@
       <section id="batchSplitWrap" class="batch-split-wrap hidden"><span>指定均摊成员</span><div id="batchSplitMembers" class="split-member-picker compact-picker"></div></section>
       <label class="full-label"><span>批次备注</span><textarea id="batchNote" rows="2" placeholder="例如：8 月电气组采购批次"></textarea></label>
       <div id="batchResult" class="batch-result"></div>
+      <div id="batchReviewList" class="batch-review-list hidden"></div>
       <footer><button type="button" class="btn secondary" data-close="batchDialog">取消</button><button class="btn primary" type="submit">开始批量导入</button></footer>
     </form>
   </dialog>
@@ -301,13 +318,14 @@
         <label><input type="radio" name="pdfExportMode" value="merged"><span><b>合并为一个 PDF</b><small>按台账顺序合并所有页面</small></span></label>
       </div>
       <p class="export-quality-note">源文件为 PDF 时直接使用；图片按原始像素无缩放封装，不重新截图或降低清晰度。</p>
+      <label class="switch-row"><span><b>发票 + 证明附件</b><small>可转换内容追加为独立页面，不可转换源文件保留在 ZIP 并写入清单。</small></span><input id="pdfIncludeSupporting" type="checkbox"></label>
       <footer><button type="button" class="btn secondary" data-close="pdfExportDialog">取消</button><button class="btn primary">选择位置并导出</button></footer>
     </form>
   </dialog>
 
   <dialog id="settlementDialog" class="modal small-modal"><form id="settlementForm" class="modal-card"><header><div><p class="eyebrow">成员还款</p><h3>登记成员还款</h3></div><button type="button" class="dialog-close" data-close="settlementDialog">×</button></header><div class="form-grid two"><label><span>付款成员</span><select id="settlementFrom" required></select></label><label><span>收款成员</span><select id="settlementTo" required></select></label><label><span>金额 / 元</span><input id="settlementAmount" type="number" min="0.01" step="0.01" required></label><label><span>还款日期</span><input id="settlementDate" type="date" required></label></div><label class="full-label"><span>备注</span><textarea id="settlementNote" rows="2"></textarea></label><footer><button type="button" class="btn secondary" data-close="settlementDialog">取消</button><button class="btn primary">确认登记</button></footer></form></dialog>
 
-  <dialog id="memberDialog" class="modal"><form id="memberForm" class="modal-card"><header><div><p class="eyebrow">车队成员</p><h3 id="memberDialogTitle">新增成员</h3></div><button type="button" class="dialog-close" data-close="memberDialog">×</button></header><input id="memberId" type="hidden"><div class="form-grid two"><label><span>姓名 *</span><input id="memberName" required></label><label><span>所属组别</span><input id="memberDepartment" list="departmentOptions" placeholder="选择或输入长期保留组别"><datalist id="departmentOptions"></datalist></label><label><span>学号</span><input id="memberStudentId"></label><label><span>手机号</span><input id="memberPhone"></label><label><span>邮箱</span><input id="memberEmail" type="email"></label><label><span>标识色</span><input id="memberColor" type="color" value="#27d3ff"></label></div><footer><button type="button" class="btn secondary" data-close="memberDialog">取消</button><button class="btn primary">保存成员</button></footer></form></dialog>
+  <dialog id="memberDialog" class="modal"><form id="memberForm" class="modal-card"><header><div><p class="eyebrow">车队成员</p><h3 id="memberDialogTitle">新增成员</h3></div><button type="button" class="dialog-close" data-close="memberDialog">×</button></header><input id="memberId" type="hidden"><div class="form-grid two"><label><span>姓名 *</span><input id="memberName" required></label><label><span>所属组别</span><input id="memberDepartment" list="departmentOptions" placeholder="选择或输入长期保留组别"><datalist id="departmentOptions"></datalist></label><label><span>学号</span><input id="memberStudentId"></label><label><span>手机号</span><input id="memberPhone"></label><label><span>邮箱</span><input id="memberEmail" type="email"></label><label><span>标识色</span><input id="memberColor" type="color" value="#27d3ff"></label><label class="full-label"><span>成员头像</span><input id="memberAvatarFile" type="file" accept="image/*,.gif"><small>成员可上传自己的头像，管理员也可代为设置。</small></label></div><footer><button type="button" class="btn secondary" data-close="memberDialog">取消</button><button class="btn primary">保存成员</button></footer></form></dialog>
 
   <dialog id="userDialog" class="modal"><form id="userForm" class="modal-card"><header><div><p class="eyebrow">登录账号</p><h3 id="userDialogTitle">新增账号</h3></div><button type="button" class="dialog-close" data-close="userDialog">×</button></header><input id="editUserId" type="hidden"><div class="form-grid two"><label><span>登录账号 *</span><input id="editUsername" required></label><label><span>显示名称 *</span><input id="editDisplayName" required></label><label><span>关联成员</span><select id="editUserMember"><option value="">不关联</option></select></label><label><span>权限角色</span><select id="editUserRole"><option value="member">成员 - 可增删改</option><option value="viewer">公共查看 - 只读</option><option value="admin">管理员 - 全部权限</option></select></label><label><span>设置密码</span><input id="editUserPassword" type="password" placeholder="编辑时留空表示不修改"></label><label class="switch-label"><span>账号启用</span><input id="editUserActive" type="checkbox" checked></label></div><footer><button type="button" class="btn secondary" data-close="userDialog">取消</button><button class="btn primary">保存账号</button></footer></form></dialog>
 
@@ -369,6 +387,8 @@
           </div>
           <div class="form-grid two"><label><span>系统名称</span><input id="teamNameSetting"></label><label><span>主题强调色</span><input id="accentColor" type="color" value="#27d3ff"></label></div>
           <label class="full-label"><span>背景遮罩强度 <b id="overlayValue">82%</b></span><input id="backgroundOverlay" type="range" min="20" max="98" value="82"></label>
+          <label class="full-label"><span>登录框透明度 <b id="loginOpacityValue">78%</b></span><input id="loginPanelOpacity" type="range" min="35" max="100" value="78"></label>
+          <div class="form-grid two"><label class="switch-row"><span><b>登录背景随机</b><small>从轮播素材随机开始</small></span><input id="loginRandomEnabled" type="checkbox"></label><label class="switch-row"><span><b>全局背景随机</b><small>登录后也随机展示已配置背景</small></span><input id="globalBackgroundRandom" type="checkbox"></label></div>
           <div class="background-preset-row"><span>背景清晰度预设</span><button type="button" data-overlay-preset="35">非常明显</button><button type="button" data-overlay-preset="50">明显</button><button type="button" data-overlay-preset="68">均衡</button><button type="button" data-overlay-preset="82">清晰文字</button><button type="button" data-overlay-preset="92">弱背景</button></div>
           <div class="background-control"><div id="backgroundPreview" class="media-preview empty">当前使用默认赛车背景</div><div><label class="btn secondary media-upload-btn">上传自定义背景<input id="backgroundFile" type="file" accept="image/*,video/mp4,video/webm,.gif,.m4v" hidden></label><button id="clearBackgroundBtn" type="button" class="btn danger subtle">恢复默认背景</button><small>支持图片、GIF、MP4 和 WebM，文件保存在本机。</small></div></div>
         </section>
@@ -452,7 +472,7 @@
   <dialog id="updateDialog" class="modal">
     <div class="modal-card">
       <header><div><p class="eyebrow">版本管理</p><h3>更新日志与自动更新</h3></div><button type="button" class="dialog-close" data-close="updateDialog">×</button></header>
-      <div class="update-current"><div><span>当前版本</span><strong id="updateCurrentVersion">V2.2.4</strong></div><label class="mini-switch"><input id="autoUpdateCheck" type="checkbox" checked><span>启动后自动检查</span></label></div>
+      <div class="update-current"><div><span>当前版本</span><strong id="updateCurrentVersion">V2.3.0</strong></div><label class="mini-switch"><input id="autoUpdateCheck" type="checkbox" checked><span>启动后自动检查</span></label></div>
       <label class="update-mode-choice"><span>更新方式</span><select id="updateInstallMode"><option value="auto">自动完整备份并更新（推荐）</option><option value="manual">手动下载补丁包并覆盖</option></select><small id="updateModeHint">安装前自动备份全部赛季、人员、组别、账号、发票与附件，再重启更新。</small></label>
       <div class="update-actions"><button id="checkUpdateBtn" type="button" class="btn secondary">检查 GitHub 新版本</button><a id="updateReleaseLink" class="btn secondary hidden" target="_blank" rel="noopener">查看发布页面</a><button id="installUpdateBtn" type="button" class="btn primary hidden">一键更新到最新版</button></div>
       <div id="updateStatus" class="update-status">正在读取本地更新日志……</div>
@@ -461,14 +481,63 @@
     </div>
   </dialog>
 
+  <dialog id="recoveryDialog" class="modal small-modal">
+    <form id="recoveryForm" class="modal-card">
+      <header><div><p class="eyebrow">本机账号找回</p><h3>重置管理员账号与密码</h3></div><button type="button" class="dialog-close" data-close="recoveryDialog">×</button></header>
+      <p id="recoveryHint" class="batch-action-summary">请输入安装本版本时保存的原始管理员账号与密码。连续失败 5 次将锁定 15 分钟。</p>
+      <label class="full-label"><span>原始管理员账号</span><input id="recoveryOriginalUsername" required autocomplete="off"></label>
+      <label class="full-label"><span>原始管理员密码</span><input id="recoveryOriginalPassword" type="password" required autocomplete="off"></label>
+      <label class="full-label"><span>新管理员账号</span><input id="recoveryNewUsername" minlength="3" required></label>
+      <label class="full-label"><span>新密码</span><input id="recoveryNewPassword" type="password" minlength="8" required><small>至少 8 位，同时包含字母和数字</small></label>
+      <footer><button type="button" class="btn secondary" data-close="recoveryDialog">取消</button><button class="btn primary">验证并重置</button></footer>
+    </form>
+  </dialog>
+
+  <dialog id="recoverySettingsDialog" class="modal small-modal">
+    <form id="recoverySettingsForm" class="modal-card">
+      <header><div><p class="eyebrow">管理员安全</p><h3>配置本机找回凭据</h3></div><button type="button" class="dialog-close" data-close="recoverySettingsDialog">×</button></header>
+      <label class="switch-row"><span><b>启用忘记密码找回</b><small>关闭后登录页无法通过原始凭据重置</small></span><input id="recoverySettingsEnabled" type="checkbox" checked></label>
+      <label class="full-label"><span>当前管理员密码 *</span><input id="recoverySettingsCurrentPassword" type="password" required></label>
+      <label class="full-label"><span>新的原始恢复账号</span><input id="recoverySettingsOriginalUsername" minlength="3" placeholder="留空表示保持现有凭据"></label>
+      <label class="full-label"><span>新的原始恢复密码</span><input id="recoverySettingsOriginalPassword" type="password" minlength="8" placeholder="与账号同时填写"><small>仅保存加密摘要，不保存明文。</small></label>
+      <footer><button type="button" class="btn secondary" data-close="recoverySettingsDialog">取消</button><button class="btn primary">保存找回设置</button></footer>
+    </form>
+  </dialog>
+
+  <dialog id="personalSettingsDialog" class="modal large-modal">
+    <div class="modal-card">
+      <header><div><p class="eyebrow">个人界面</p><h3>音频与软件设置包</h3></div><button type="button" class="dialog-close" data-close="personalSettingsDialog">×</button></header>
+      <div class="personal-settings-grid">
+        <section class="appearance-pane"><div class="appearance-heading"><div><b>背景音乐</b><small>仅导入自行创作、已获授权或许可证明确的音频；默认静音。</small></div><label class="btn secondary media-upload-btn">导入音乐<input id="personalAudioFiles" type="file" accept="audio/*,.mp3,.wav,.ogg,.flac,.m4a,.aac,.wma" multiple hidden></label></div><div class="form-grid three"><label><span>播放方式</span><select id="personalAudioMode"><option value="sequence">顺序播放</option><option value="repeat-one">单曲循环</option><option value="random">随机播放</option></select></label><label class="switch-row"><span><b>启用声音</b><small>默认关闭</small></span><input id="personalAudioEnabled" type="checkbox"></label><label><span>音量 <b id="personalAudioVolumeText">35%</b></span><input id="personalAudioVolume" type="range" min="0" max="100" value="35"></label></div><div id="personalAudioList" class="personal-audio-list"><div class="empty-state">尚未导入音乐</div></div></section>
+        <section class="appearance-pane"><div class="appearance-heading"><div><b>个人设置导出与导入</b><small>保存主题、快捷键、界面偏好、头像和音频列表；不包含密码、会话或发票。</small></div></div><label class="mini-switch"><input id="settingsIncludeMedia" type="checkbox"><span>设置包中包含音频等媒体文件</span></label><div class="inline-actions"><button id="exportPersonalSettingsBtn" class="btn secondary" type="button">导出“用户名软件设置.zip”</button><label class="btn secondary">导入设置包<input id="importPersonalSettingsInput" type="file" accept=".zip" hidden></label></div></section>
+      </div>
+      <footer><button type="button" class="btn primary" data-close="personalSettingsDialog">完成</button></footer>
+    </div>
+  </dialog>
+
+  <dialog id="feedbackDialog" class="modal large-modal">
+    <form id="feedbackForm" class="modal-card">
+      <header><div><p class="eyebrow">问题反馈</p><h3>提交问题与参考附件</h3></div><button type="button" class="dialog-close" data-close="feedbackDialog">×</button></header>
+      <p class="batch-action-summary">以下均非必填。姓名和联系方式仅用于队内邮件或本机队列，提交公开 GitHub 问题时自动隐藏。</p>
+      <div class="form-grid two"><label><span>姓名</span><input id="feedbackName" maxlength="100"></label><label><span>赛季</span><input id="feedbackSeason" maxlength="40"></label><label><span>组别</span><input id="feedbackDepartment" maxlength="100"></label><label><span>联系方式</span><input id="feedbackContact" maxlength="200" placeholder="手机或邮箱"></label></div>
+      <label class="full-label"><span>问题详细描述</span><textarea id="feedbackDescription" rows="6" maxlength="10000"></textarea></label>
+      <label class="upload-zone"><input id="feedbackFiles" type="file" multiple><span class="upload-symbol">＋</span><span><b>添加参考附件</b><small>支持截图、表格、文字、Word、PPT、PDF、视频等常见格式</small></span></label>
+      <label class="switch-row"><span><b>允许二次确认后公开附件</b><small>当前版本不会自动公开附件；仅记录此选择。</small></span><input id="feedbackPublicConsent" type="checkbox"></label>
+      <footer><button type="button" class="btn secondary" data-close="feedbackDialog">取消</button><button class="btn primary">打包并提交反馈</button></footer>
+    </form>
+  </dialog>
+
   <dialog id="attachmentViewerDialog" class="modal attachment-viewer-modal">
     <div class="modal-card attachment-viewer-card">
       <header><div><p class="eyebrow">附件预览</p><h3 id="attachmentViewerTitle">查看原文件</h3></div><button type="button" class="dialog-close" data-close="attachmentViewerDialog">×</button></header>
-      <div class="attachment-viewer-tools"><button id="attachmentZoomOut" type="button" class="btn secondary">－ 缩小</button><strong id="attachmentZoomValue">100%</strong><button id="attachmentZoomIn" type="button" class="btn secondary">＋ 放大</button><button id="attachmentZoomReset" type="button" class="btn secondary">恢复 100%</button><a id="attachmentOpenOriginal" class="btn primary" target="_blank" rel="noopener">打开原文件</a></div>
+      <div class="attachment-viewer-tools"><button id="attachmentZoomOut" type="button" class="btn secondary">－ 缩小</button><strong id="attachmentZoomValue">100%</strong><button id="attachmentZoomIn" type="button" class="btn secondary">＋ 放大</button><button id="attachmentZoomReset" type="button" class="btn secondary">恢复 100%</button><button id="attachmentOpenOriginal" class="btn primary" type="button">使用电脑默认程序打开</button></div>
       <div id="attachmentViewerCanvas" class="attachment-viewer-canvas"></div>
       <footer><button type="button" class="btn primary" data-close="attachmentViewerDialog">完成</button></footer>
     </div>
   </dialog>
+
+  <audio id="personalAudioPlayer" preload="metadata"></audio>
+  <aside id="qualityFaultCenter" class="quality-fault-center hidden"><button id="qualityFaultToggle" type="button"><span>故障追溯</span><b id="qualityFaultCount">0</b></button><div id="qualityFaultPanel" class="quality-fault-panel hidden"><header><b>待处理问题</b><button id="qualityFaultClose" type="button">×</button></header><div id="qualityFaultList"></div></div></aside>
 
   <div id="toastRegion" class="toast-region" aria-live="polite"></div>
   <div id="loadingOverlay" class="loading-overlay hidden" role="status" aria-live="polite">
@@ -478,6 +547,6 @@
       <small id="loadingDetail">任务正在本机运行，请勿关闭软件</small>
     </div>
   </div>
-  <script src="/static/app.js?v=2.2.4"></script>
+  <script src="/static/app.js?v=2.3.0"></script>
 </body>
 </html>

@@ -3,6 +3,7 @@ from __future__ import annotations
 import multiprocessing
 import os
 import socket
+import subprocess
 import sys
 import threading
 import time
@@ -15,6 +16,22 @@ import uvicorn
 
 from . import __version__
 from .config import RUNTIME_HOME
+
+
+def open_edge_or_default(url: str) -> None:
+    if os.name == "nt":
+        roots = [os.environ.get("PROGRAMFILES(X86)"), os.environ.get("PROGRAMFILES"), os.environ.get("LOCALAPPDATA")]
+        candidates = [Path(root) / "Microsoft" / "Edge" / "Application" / "msedge.exe" for root in roots if root]
+        edge = next((item for item in candidates if item.is_file()), None)
+        if edge:
+            subprocess.Popen([str(edge), url], creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+            return
+        try:
+            os.startfile(url)  # type: ignore[attr-defined]
+            return
+        except OSError:
+            pass
+    webbrowser.open(url)
 
 
 class DesktopApi:
@@ -114,7 +131,7 @@ def main() -> None:
             debug=False,
         )
     except Exception:
-        webbrowser.open(url)
+        open_edge_or_default(url)
         try:
             while True:
                 time.sleep(1)

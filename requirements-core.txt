@@ -5,3 +5,4 @@ httpx>=0.28,<1
 pypdf>=5.9,<7
 Pillow>=10,<13
 pywebview==6.2.1
+pywin32>=306,<312; sys_platform == "win32"

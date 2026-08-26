@@ -107,7 +107,14 @@ def extract_zip(upload_path: Path, user: dict[str, Any]) -> tuple[list[dict[str,
     imported: list[dict[str, Any]] = []
     skipped: list[dict[str, str]] = []
     with zipfile.ZipFile(upload_path) as archive:
-        for info in archive.infolist():
+        entries = [info for info in archive.infolist() if not info.is_dir()]
+        max_entries = max(1, int(os.environ.get("YXRT_ZIP_MAX_ENTRIES", "10000")))
+        max_total = max(1024 * 1024, int(os.environ.get("YXRT_ZIP_MAX_UNCOMPRESSED_BYTES", str(50 * 1024**3))))
+        if len(entries) > max_entries:
+            raise ValueError(f"压缩包文件数量超过本机安全上限 {max_entries}")
+        if sum(max(0, int(info.file_size)) for info in entries) > max_total:
+            raise ValueError("压缩包解压后体积超过本机安全上限，可分批导入或调整配置")
+        for info in entries:
             if info.is_dir():
                 continue
             filename = Path(info.filename.replace("\\", "/")).name
@@ -117,6 +124,9 @@ def extract_zip(upload_path: Path, user: dict[str, Any]) -> tuple[list[dict[str,
                 continue
             if info.compress_size > 0 and info.file_size / info.compress_size > 2000:
                 skipped.append({"file_name": filename, "reason": "压缩比异常，已按安全规则跳过"})
+                continue
+            if info.flag_bits & 0x1:
+                skipped.append({"file_name": filename, "reason": "加密压缩文件无法自动读取"})
                 continue
             fd, temp_name = tempfile.mkstemp(prefix="yxrt_zip_", suffix=extension, dir=TMP_DIR)
             os.close(fd)

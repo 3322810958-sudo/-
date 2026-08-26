@@ -11,7 +11,10 @@ const state = {
   shortcuts: {}, shortcutDraft: {},
   loadingTimer: null, loadingProgress: 0, loadingToken: 0, updateRelease: null,
   currentInvoicePreview: null, batchPreviewFiles: [], attachmentViewerZoom: 1,
-  version: "2.2.4", updateJobId: "",
+  version: "2.3.0", updateJobId: "", qualityIssues: [], openSourceReferences: [],
+  supportingAttachments: [], batchReviewIds: [], userPreferences: {}, personalAudio: [], audioIndex: -1,
+  draftHistory: [], draftHistoryIndex: -1, draftHistoryTimer: null, activeDraftForm: null,
+  lastOcrResult: null,
 };
 
 const DISPLAY_MODE_KEY = "yanxiang-display-mode";
@@ -170,12 +173,106 @@ async function resetShortcutSettings() {
   state.shortcutDraft = { ...DEFAULT_SHORTCUTS }; renderShortcutEditor(); toast("已载入默认快捷键，请点击保存");
 }
 
-function saveShortcutSettings(event) {
+async function saveShortcutSettings(event) {
   event.preventDefault();
   if (shortcutDuplicates(state.shortcutDraft).size) return renderShortcutEditor();
   state.shortcuts = { ...state.shortcutDraft };
   try { localStorage.setItem(SHORTCUT_STORAGE_KEY, JSON.stringify(state.shortcuts)); } catch (_) { return toast("浏览器禁止保存快捷键设置", "error"); }
+  await persistPersonalPreferences({ shortcuts: state.shortcuts }).catch(() => {});
   $("shortcutsDialog").close(); toast("快捷键设置已保存");
+}
+
+function currentPersonalPreferences(extra = {}) {
+  return {
+    ...state.userPreferences,
+    theme: savedDisplayMode(), shortcuts: state.shortcuts,
+    audio_mode: $("personalAudioMode")?.value || state.userPreferences.audio_mode || "sequence",
+    audio_muted: $("personalAudioEnabled") ? !$("personalAudioEnabled").checked : state.userPreferences.audio_muted !== false,
+    audio_volume: $("personalAudioVolume") ? Number($("personalAudioVolume").value || 35) / 100 : Number(state.userPreferences.audio_volume ?? .35),
+    ...extra,
+  };
+}
+
+async function persistPersonalPreferences(extra = {}) {
+  if (!state.user) return;
+  const preferences = currentPersonalPreferences(extra);
+  const result = await api("/api/user/preferences", { method: "PUT", body: preferences });
+  state.userPreferences = result.settings || preferences;
+}
+
+async function loadPersonalSettings(render = true) {
+  if (!state.user) return;
+  const result = await api("/api/user/preferences");
+  state.userPreferences = result.settings || state.userPreferences || {};
+  state.personalAudio = result.audio || [];
+  if (render) renderPersonalSettings();
+}
+
+function renderPersonalSettings() {
+  $("personalAudioMode").value = state.userPreferences.audio_mode || "sequence";
+  $("personalAudioEnabled").checked = state.userPreferences.audio_muted === false;
+  $("personalAudioVolume").value = Math.round(Number(state.userPreferences.audio_volume ?? .35) * 100);
+  $("personalAudioVolumeText").textContent = `${$("personalAudioVolume").value}%`;
+  $("personalAudioList").innerHTML = state.personalAudio.map((item, index) => `<article class="personal-audio-item"><div><b>${escapeHtml(item.title || item.original_name)}</b><small>${escapeHtml(item.original_name)}</small></div><button type="button" class="row-action" data-audio-play="${index}">▶</button><button type="button" class="row-action delete" data-audio-delete="${escapeHtml(item.id)}">×</button></article>`).join("") || `<div class="empty-state">尚未导入音乐</div>`;
+  const player = $("personalAudioPlayer"); player.volume = Math.max(0, Math.min(1, Number(state.userPreferences.audio_volume ?? .35))); player.muted = state.userPreferences.audio_muted !== false;
+}
+
+async function openPersonalSettings() {
+  try { await loadPersonalSettings(true); $("personalSettingsDialog").showModal(); }
+  catch (error) { toast(error.message, "error"); }
+}
+
+function playPersonalAudio(index) {
+  const item = state.personalAudio[index]; if (!item) return;
+  state.audioIndex = index; const player = $("personalAudioPlayer");
+  if (player.src !== new URL(item.url, location.href).href) player.src = item.url;
+  player.muted = !$("personalAudioEnabled").checked; player.volume = Number($("personalAudioVolume").value || 35) / 100;
+  player.play().catch(() => toast("浏览器暂时阻止播放，请再次点击播放", "error"));
+}
+
+function advancePersonalAudio() {
+  if (!state.personalAudio.length || state.audioIndex < 0) return;
+  const mode = $("personalAudioMode").value;
+  if (mode === "repeat-one") return playPersonalAudio(state.audioIndex);
+  const next = mode === "random" ? Math.floor(Math.random() * state.personalAudio.length) : (state.audioIndex + 1) % state.personalAudio.length;
+  playPersonalAudio(next);
+}
+
+async function uploadPersonalAudio(files) {
+  const selected = [...(files || [])]; if (!selected.length) return;
+  loading(true, "正在导入个人音乐", 2, `共 ${selected.length} 个文件`, false);
+  for (let index = 0; index < selected.length; index++) {
+    const form = new FormData(); form.append("file", selected[index]); form.append("title", selected[index].name);
+    try { await api("/api/user/audio", { method: "POST", body: form }); } catch (error) { toast(`${selected[index].name}：${error.message}`, "error"); }
+    setLoadingProgress(Math.round((index + 1) / selected.length * 100), "正在导入个人音乐", `已完成 ${index + 1}/${selected.length}`);
+  }
+  loading(false); await loadPersonalSettings(true); $("personalAudioFiles").value = "";
+}
+
+async function deletePersonalAudio(id) {
+  try { await api(`/api/user/audio/${encodeURIComponent(id)}`, { method: "DELETE" }); await loadPersonalSettings(true); }
+  catch (error) { toast(error.message, "error"); }
+}
+
+async function exportPersonalSettings() {
+  try {
+    await persistPersonalPreferences();
+    const include = $("settingsIncludeMedia").checked ? "1" : "0";
+    const response = await fetch(`/api/user/settings-package/export?include_media=${include}`, { credentials: "same-origin" });
+    if (!response.ok) { const detail = await response.json().catch(() => ({})); throw new Error(detail.detail || "设置包导出失败"); }
+    await saveBlob(await response.blob(), `${state.user.username}软件设置.zip`); toast("个人软件设置包已导出");
+  } catch (error) { toast(error.message, "error"); }
+}
+
+async function importPersonalSettings(file) {
+  if (!file) return; const form = new FormData(); form.append("file", file);
+  try {
+    const result = await api("/api/user/settings-package/import", { method: "POST", body: form });
+    state.userPreferences = result.settings || {}; state.shortcuts = { ...DEFAULT_SHORTCUTS, ...(state.userPreferences.shortcuts || {}) };
+    if (DISPLAY_MODES.has(state.userPreferences.theme)) applyDisplayMode(state.userPreferences.theme);
+    await loadPersonalSettings(true); toast(`设置包已导入${result.imported_media ? `，包含 ${result.imported_media} 个音频` : ""}`);
+  } catch (error) { toast(error.message, "error"); }
+  finally { $("importPersonalSettingsInput").value = ""; }
 }
 
 async function runShortcutAction(action) {
@@ -225,7 +322,7 @@ async function api(path, options = {}) {
     config.body = JSON.stringify(config.body);
   }
   const response = await fetch(path, config);
-  if (response.status === 401) {
+  if (response.status === 401 && !path.startsWith("/api/auth/login") && !path.startsWith("/api/auth/recover-admin")) {
     showLogin();
     throw new Error("登录已失效，请重新登录");
   }
@@ -363,7 +460,10 @@ function showLoginSlide(index, immediate = false) {
 }
 
 function startLoginSlideshow() {
-  stopLoginSlideshow(); showLoginSlide(state.loginSlideIndex || 0, true);
+  stopLoginSlideshow();
+  const slides = state.publicSettings?.login_slides || [];
+  if (state.publicSettings?.login_random_enabled && slides.length) state.loginSlideIndex = Math.floor(Math.random() * slides.length);
+  showLoginSlide(state.loginSlideIndex || 0, true);
 }
 
 function applyPublicAppearance(settings = {}) {
@@ -371,6 +471,7 @@ function applyPublicAppearance(settings = {}) {
   setAccent(settings.accent_color || "#27d3ff");
   const teamName = String(settings.team_name || "燕翔车队").replace(/\s*Racing Team\s*/i, "").trim() || "燕翔车队";
   $("loginTeamName").textContent = teamName;
+  document.documentElement.style.setProperty("--login-panel-opacity", String(Number(settings.login_panel_opacity || .78)));
   if (!$("loginView").classList.contains("hidden")) startLoginSlideshow();
 }
 
@@ -381,8 +482,10 @@ async function loadPublicAppearance() {
 
 function applyTheme() {
   const settings = state.settings || {};
-  const mediaUrl = settings.background_media_url || settings.background_image || "";
-  const mediaKind = settings.background_media_kind || "image";
+  const randomSlides = (settings.login_slides || []).filter((item) => item.kind !== "video");
+  const randomBackground = settings.global_background_random && randomSlides.length ? randomSlides[Math.floor(Math.random() * randomSlides.length)] : null;
+  const mediaUrl = randomBackground?.private_url || randomBackground?.url || settings.background_media_url || settings.background_image || "";
+  const mediaKind = randomBackground ? "image" : (settings.background_media_kind || "image");
   const background = mediaUrl && mediaKind !== "video" ? `url("${String(mediaUrl).replace(/"/g, "%22")}")` : "none";
   document.documentElement.style.setProperty("--custom-background", background);
   document.documentElement.style.setProperty("--background-overlay", String(settings.background_overlay || ".82"));
@@ -392,7 +495,7 @@ function applyTheme() {
     if (video.getAttribute("src") !== mediaUrl) video.src = mediaUrl;
     video.classList.add("active"); video.play().catch(() => {});
   } else { video.pause(); video.removeAttribute("src"); video.load(); video.classList.remove("active"); }
-  document.title = `${settings.team_name || "燕翔车队"} · 经费管理系统 V${state.version || "2.2.4"}`;
+  document.title = `${settings.team_name || "燕翔车队"} · 经费管理系统 V${state.version || "2.3.0"}`;
 }
 
 function applyAccess() {
@@ -406,7 +509,8 @@ function applyAccess() {
   $("seasonReadOnlyBanner").classList.toggle("hidden", season.is_open !== false);
   $("userName").textContent = state.user.display_name;
   $("userRole").textContent = roleLabel(state.user.role);
-  $("userAvatar").textContent = state.user.display_name.slice(0, 1);
+  const ownMember = state.members.find((item) => item.id === state.user.member_id);
+  $("userAvatar").innerHTML = ownMember?.avatar_url ? `<img src="${escapeHtml(ownMember.avatar_url)}" alt="头像">` : escapeHtml(state.user.display_name.slice(0, 1));
 }
 
 function renderSync(sync = {}) {
@@ -444,10 +548,16 @@ async function loadBootstrap() {
   state.settings = data.settings || {};
   state.dashboard = data.dashboard;
   state.sync = data.sync || {};
-  state.version = data.version || "2.2.4";
+  state.version = data.version || "2.3.0";
+  state.qualityIssues = data.quality_issues || [];
+  state.openSourceReferences = data.open_source_references || [];
+  state.userPreferences = data.user_preferences || {};
+  if (state.userPreferences.shortcuts && typeof state.userPreferences.shortcuts === "object") state.shortcuts = { ...state.shortcuts, ...state.userPreferences.shortcuts };
+  if (DISPLAY_MODES.has(state.userPreferences.theme)) applyDisplayMode(state.userPreferences.theme, false);
   $("versionLabel").textContent = `V${data.version}`;
   $("updateCurrentVersion").textContent = `V${state.version}`;
-  state.publicSettings = state.settings; applyTheme(); applyAccess(); renderSync(state.sync); renderReferenceOptions(); renderDashboard(); showApp(); connectSocket();
+  state.publicSettings = state.settings; applyTheme(); applyAccess(); renderSync(state.sync); renderReferenceOptions(); renderDashboard(); renderQualityCenter(); showApp(); connectSocket();
+  loadPersonalSettings(false).catch(() => {});
   if (state.user.must_change_password) {
     setTimeout(() => { toast("首次登录请先修改账号与密码", "error", 5000); openCredentials(); }, 350);
   }
@@ -695,7 +805,15 @@ function invoiceFilterParams() {
 
 async function loadInvoices() {
   const params = invoiceFilterParams();
-  const data = await api(`/api/invoices?${params}`); state.invoices = data.items || []; renderInvoices();
+  const [data] = await Promise.all([api(`/api/invoices?${params}`), loadQualityIssues(false)]); state.invoices = data.items || []; renderInvoices();
+}
+
+function invoiceQualityClass(invoiceId) {
+  const types = state.qualityIssues.filter((item) => item.invoice_id === invoiceId).map((item) => item.issue_type);
+  if (types.some((value) => ["import_failed", "ocr_failed"].includes(value))) return "invoice-quality-import";
+  if (types.some((value) => ["export_failed", "conversion_failed", "attachment_missing"].includes(value))) return "invoice-quality-export";
+  if (types.includes("low_confidence")) return "invoice-quality-low";
+  return "";
 }
 
 function selectedInvoices() { return state.invoices.filter((item) => state.selectedInvoiceIds.has(item.id)); }
@@ -727,12 +845,12 @@ function renderInvoices() {
   const sum = state.invoices.reduce((total, item) => total + Number(item.total_amount || 0), 0);
   $("invoiceCount").textContent = `${state.invoices.length} 条记录`; $("invoiceSum").textContent = `合计 ${money(sum)}`;
   $("invoiceTable").innerHTML = state.invoices.map((item) => {
-    const attachment = item.attachment_id ? `<a class="row-action" href="/api/attachments/${encodeURIComponent(item.attachment_id)}/content" target="_blank" title="打开附件">↗</a>` : "";
+    const attachment = item.attachment_id ? `<button class="row-action" type="button" data-attachment-open="${escapeHtml(item.attachment_id)}" title="使用电脑默认程序打开附件">↗</button>` : "";
     const actions = canWrite() ? `${attachment}<button class="row-action" data-invoice-action="edit" data-id="${escapeHtml(item.id)}" title="编辑">✎</button><button class="row-action delete" data-invoice-action="delete" data-id="${escapeHtml(item.id)}" title="删除">×</button>` : `${attachment}<button class="row-action" data-invoice-action="view" data-id="${escapeHtml(item.id)}" title="查看">⌕</button>`;
     const splitNames = item.splits.map((split) => split.member_name).join("、");
     const progress = item.total_amount > 0 ? Math.round(item.reimbursed_amount / item.total_amount * 100) : 0;
     const checked = state.selectedInvoiceIds.has(item.id);
-    return `<tr data-invoice-row="${escapeHtml(item.id)}" class="${checked ? "invoice-row-selected" : ""}">
+    return `<tr data-invoice-row="${escapeHtml(item.id)}" class="${checked ? "invoice-row-selected " : ""}${invoiceQualityClass(item.id)}">
       <td class="select-cell"><input class="invoice-select" type="checkbox" data-id="${escapeHtml(item.id)}" aria-label="选择 ${escapeHtml(item.vendor || "该发票")}" ${checked ? "checked" : ""}></td>
       <td><span class="cell-main">开票 ${escapeHtml(dateText(item.invoice_date))}</span><span class="cell-sub">上传 ${escapeHtml(dateText(item.uploaded_at || item.created_at))} · ${escapeHtml(item.created_by_name || "系统任务")}</span></td>
       <td><span class="cell-main">${escapeHtml(item.vendor || "待补充")}</span><span class="cell-sub">${escapeHtml(item.product_type)}${item.ocr_status === "queued" ? " · OCR排队中" : ""}</span></td>
@@ -744,6 +862,36 @@ function renderInvoices() {
     </tr>`;
   }).join("") || emptyRow(9, "没有符合条件的记录");
   renderInvoiceSelection();
+}
+
+async function loadQualityIssues(render = true) {
+  try {
+    const result = await api("/api/quality/issues"); state.qualityIssues = result.items || [];
+    if (render) { renderQualityCenter(); if (state.currentView === "invoices") renderInvoices(); }
+  } catch (_) { /* 旧补丁后端暂不可用时不影响台账 */ }
+  return state.qualityIssues;
+}
+
+function renderQualityCenter() {
+  const items = state.qualityIssues || [];
+  $("qualityFaultCenter").classList.toggle("hidden", !state.user || !items.length);
+  $("qualityFaultCount").textContent = String(items.length);
+  $("qualityFaultList").innerHTML = items.map((item) => `<article class="quality-fault-item ${escapeHtml(item.issue_type)}">
+    <i></i><div><b>${escapeHtml(item.label || "待处理问题")} · ${escapeHtml(item.vendor || item.attachment_name || "未关联发票")}</b><small>${escapeHtml(item.message || "请复核")}</small></div>
+    <div>${item.invoice_id ? `<button type="button" data-quality-open="${escapeHtml(item.id)}">定位</button>` : ""}<button type="button" data-quality-resolve="${escapeHtml(item.id)}">已处理</button></div>
+  </article>`).join("") || `<div class="empty-state">当前没有待处理问题</div>`;
+}
+
+async function resolveQualityIssue(id) {
+  try { await api(`/api/quality/issues/${encodeURIComponent(id)}/resolve`, { method: "POST" }); await loadQualityIssues(true); toast("问题已标记为处理完成"); }
+  catch (error) { toast(error.message, "error"); }
+}
+
+async function openQualityIssue(id) {
+  const issue = state.qualityIssues.find((item) => item.id === id);
+  if (!issue?.invoice_id) return toast("该问题未关联具体发票，可在故障框中直接标记处理", "error");
+  try { await navigate("invoices"); await openInvoice(issue.invoice_id, !canWrite()); $("qualityFaultPanel").classList.add("hidden"); }
+  catch (error) { toast(error.message, "error"); }
 }
 
 function previewKind(item) {
@@ -792,12 +940,22 @@ function applyAttachmentZoom(value) {
 function openAttachmentViewer(item) {
   if (!item?.url) return toast("该附件暂时无法预览", "error");
   const kind = previewKind(item), canvas = $("attachmentViewerCanvas");
+  state.attachmentViewerItem = item;
   $("attachmentViewerTitle").textContent = item.name || "查看原文件";
-  $("attachmentOpenOriginal").href = item.url;
   if (kind === "image") canvas.innerHTML = `<img class="attachment-viewer-content image" src="${escapeHtml(item.url)}" alt="${escapeHtml(item.name)}">`;
   else if (["pdf", "text"].includes(kind)) canvas.innerHTML = `<iframe class="attachment-viewer-content frame" src="${escapeHtml(item.url)}" title="${escapeHtml(item.name)}"></iframe>`;
   else canvas.innerHTML = `<div class="empty-state attachment-viewer-content">该格式不能在窗口内直接显示，请点击“打开原文件”。</div>`;
   applyAttachmentZoom(1); $("attachmentViewerDialog").showModal();
+}
+
+async function openLocalAttachment(attachmentId = "") {
+  const id = attachmentId || state.attachmentViewerItem?.attachmentId || "";
+  if (!id) {
+    if (state.attachmentViewerItem?.url) window.open(state.attachmentViewerItem.url, "_blank", "noopener");
+    return;
+  }
+  try { await api(`/api/attachments/${encodeURIComponent(id)}/open`, { method: "POST" }); toast("已使用电脑默认程序打开源文件"); }
+  catch (error) { toast(error.message, "error", 6000); }
 }
 
 async function saveBlob(blob, suggestedName, pickerTypes = []) {
@@ -858,21 +1016,23 @@ function openPdfExportDialog() {
   if (!items.length) return toast("当前没有可导出的发票", "error");
   const scope = selected.length ? `已勾选 ${selected.length} 张发票` : `当前筛选结果 ${items.length} 张发票`;
   $("pdfExportSummary").textContent = `${scope}，合计 ${money(items.reduce((sum, item) => sum + Number(item.total_amount || 0), 0))}。没有原附件的记录会在完成提示中列为跳过。`;
+  $("pdfIncludeSupporting").checked = false;
   $("pdfExportDialog").showModal();
 }
 
 async function downloadPdfExport(event) {
   event.preventDefault();
   const mode = document.querySelector('input[name="pdfExportMode"]:checked')?.value || "separate";
-  const extension = mode === "merged" ? ".pdf" : ".zip";
-  const suggestedName = `燕翔车队发票_${mode === "merged" ? "合并" : "逐张"}_${nowDate()}${extension}`;
+  const includeSupporting = $("pdfIncludeSupporting").checked;
+  const extension = mode === "merged" && !includeSupporting ? ".pdf" : ".zip";
+  const suggestedName = `燕翔车队发票${includeSupporting ? "及证明" : ""}_${mode === "merged" ? "合并" : "逐张"}_${nowDate()}${extension}`;
   let fileHandle = null;
   if (window.showSaveFilePicker) {
-    try { fileHandle = await window.showSaveFilePicker({ suggestedName, types: [{ description: mode === "merged" ? "PDF 文件" : "ZIP 压缩包", accept: { [mode === "merged" ? "application/pdf" : "application/zip"]: [extension] } }] }); }
+    try { fileHandle = await window.showSaveFilePicker({ suggestedName, types: [{ description: extension === ".pdf" ? "PDF 文件" : "ZIP 压缩包", accept: { [extension === ".pdf" ? "application/pdf" : "application/zip"]: [extension] } }] }); }
     catch (error) { if (error?.name === "AbortError") return; }
   }
   const ids = [...state.selectedInvoiceIds];
-  const body = { mode, ...(ids.length ? { ids } : Object.fromEntries(invoiceFilterParams())) };
+  const body = { mode, include_supporting: includeSupporting, ...(ids.length ? { ids } : Object.fromEntries(invoiceFilterParams())) };
   $("pdfExportDialog").close(); loading(true, "正在保持原画质生成 PDF", 4, ids.length ? `处理已选择的 ${ids.length} 张发票` : `处理当前筛选的 ${state.invoices.length} 张发票`, true);
   try {
     const response = await fetch("/api/export/pdf", { method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json", "X-CSRF-Token": state.csrf }, body: JSON.stringify(body) });
@@ -881,7 +1041,8 @@ async function downloadPdfExport(event) {
     if (fileHandle) { const writable = await fileHandle.createWritable(); await writable.write(blob); await writable.close(); }
     else await saveBlob(blob, suggestedName);
     const count = Number(response.headers.get("X-Export-Count") || 0), skipped = Number(response.headers.get("X-Export-Skipped") || 0), total = Number(response.headers.get("X-Export-Total") || 0);
-    toast(`PDF 导出成功：${count} 张，合计 ${money(total)}${skipped ? `；跳过 ${skipped} 张` : ""}`, skipped ? "error" : "success", 7500);
+    toast(`PDF 导出成功：${count} 张，合计 ${money(total)}${skipped ? `；有 ${skipped} 项进入故障追溯` : ""}`, skipped ? "error" : "success", 7500);
+    await loadQualityIssues(true);
   } catch (error) { toast(error.message, "error", 7000); }
   finally { loading(false); }
 }
@@ -950,6 +1111,7 @@ function resetInvoiceForm() {
   const defaultSplits = defaultBurden === "specified_split" ? (defaults.split_member_ids || []) : activeMembers().map((item) => item.id);
   renderSplitMembers(defaultSplits); setCurrentInvoicePreview(null); updateReimbursementStatus();
   $("invoiceDialogTitle").textContent = "新增发票记录"; setInvoiceReadonly(false);
+  state.supportingAttachments = []; state.lastOcrResult = null; renderSupportingAttachments(); markUncertainFields([]);
 }
 
 function setInvoiceReadonly(readonly) {
@@ -973,10 +1135,46 @@ async function openInvoice(id, readonly = false) {
   const weights = Object.fromEntries(item.splits.map((split) => [split.member_id, Math.max(.01, split.share_amount)]));
   renderSplitMembers(item.splits.map((split) => split.member_id), weights);
   if (item.attachment_id) { $("fileState").textContent = item.attachment_name || "已关联附件"; $("runOcrBtn").disabled = false; }
-  if (item.attachment_id) setCurrentInvoicePreview({ name: item.attachment_name || "发票附件", mime: item.attachment_mime || "", url: `/api/attachments/${encodeURIComponent(item.attachment_id)}/content?inline=1` });
+  if (item.attachment_id) setCurrentInvoicePreview({ name: item.attachment_name || "发票附件", mime: item.attachment_mime || "", attachmentId: item.attachment_id, url: `/api/attachments/${encodeURIComponent(item.attachment_id)}/content?inline=1` });
   $("invoiceMetadata").innerHTML = `<span><b>开票日期</b>${escapeHtml(dateText(item.invoice_date))}</span><span><b>上传日期</b>${escapeHtml(dateText(item.uploaded_at || item.created_at))}</span><span><b>提交人</b>${escapeHtml(item.created_by_name || "系统任务")}${item.created_by_username ? `（${escapeHtml(item.created_by_username)}）` : ""}</span>`;
   $("invoiceMetadata").classList.remove("hidden");
+  state.supportingAttachments = item.supporting_attachments || []; renderSupportingAttachments();
+  const lowIssue = state.qualityIssues.find((issue) => issue.invoice_id === item.id && issue.issue_type === "low_confidence");
+  markUncertainFields(lowIssue?.details?.uncertain_fields || []);
   $("invoiceDialogTitle").textContent = readonly ? "查看发票记录" : "编辑发票记录"; updateReimbursementStatus(); setInvoiceReadonly(readonly); $("invoiceDialog").showModal();
+}
+
+const UNCERTAIN_FIELD_IDS = { invoice_no: "invoiceNo", vendor: "invoiceVendor", invoice_date: "invoiceDate", total_amount: "invoiceAmount", tax_amount: "invoiceTax" };
+function markUncertainFields(fields = []) {
+  Object.values(UNCERTAIN_FIELD_IDS).forEach((id) => $(id)?.classList.remove("ocr-uncertain"));
+  fields.forEach((field) => $(UNCERTAIN_FIELD_IDS[field])?.classList.add("ocr-uncertain"));
+}
+
+function renderSupportingAttachments() {
+  const items = state.supportingAttachments || [];
+  $("supportingAttachmentList").innerHTML = items.map((item) => `<div class="supporting-file-item"><div><b>${escapeHtml(item.label || item.original_name)}</b><small>${escapeHtml({ shopping: "购物证明", signature: "签字证明", other: "其他证明" }[item.attachment_kind] || "证明附件")} · ${escapeHtml(item.original_name)}</small></div><button class="row-action" type="button" data-support-open="${escapeHtml(item.attachment_id)}">打开</button>${canWrite() ? `<button class="row-action delete" type="button" data-support-delete="${escapeHtml(item.relation_id)}">×</button>` : ""}</div>`).join("") || `<div class="empty-state">${$("invoiceId").value ? "尚未添加证明附件" : "保存发票后可以添加证明附件"}</div>`;
+}
+
+async function uploadSupportingAttachments(files) {
+  const invoiceId = $("invoiceId").value;
+  if (!invoiceId) { $("supportingAttachmentFiles").value = ""; return toast("请先保存发票记录，再添加证明附件", "error"); }
+  const selected = [...(files || [])]; if (!selected.length) return;
+  loading(true, "正在添加证明附件", 2, `共 ${selected.length} 个文件`, false);
+  let success = 0;
+  for (let index = 0; index < selected.length; index++) {
+    const form = new FormData(); form.append("file", selected[index]); form.append("attachment_kind", $("supportingAttachmentKind").value); form.append("label", selected[index].name);
+    try { await api(`/api/invoices/${encodeURIComponent(invoiceId)}/supporting-attachments`, { method: "POST", body: form }); success += 1; }
+    catch (error) { toast(`${selected[index].name}：${error.message}`, "error", 6000); }
+    setLoadingProgress(Math.round((index + 1) / selected.length * 100), "正在添加证明附件", `已完成 ${index + 1}/${selected.length}`);
+  }
+  const refreshed = await api(`/api/invoices/${encodeURIComponent(invoiceId)}`); state.supportingAttachments = refreshed.supporting_attachments || []; renderSupportingAttachments();
+  $("supportingAttachmentFiles").value = ""; loading(false); toast(`证明附件已添加：${success}/${selected.length}`, success === selected.length ? "success" : "error");
+}
+
+async function deleteSupportingAttachment(relationId) {
+  const invoiceId = $("invoiceId").value; if (!invoiceId) return;
+  try { await api(`/api/invoices/${encodeURIComponent(invoiceId)}/supporting-attachments/${encodeURIComponent(relationId)}`, { method: "DELETE" }); state.supportingAttachments = state.supportingAttachments.filter((item) => item.relation_id !== relationId); renderSupportingAttachments(); toast("证明附件已移除"); }
+  catch (error) { toast(error.message, "error"); }
 }
 
 function invoiceFormPayload() {
@@ -991,6 +1189,7 @@ function invoiceFormPayload() {
     reimbursed_amount: $("reimbursedAmount").value || 0, reimbursement_date: $("reimbursementDate").value,
     note: $("invoiceNote").value, attachment_id: $("attachmentId").value,
     ocr_text: $("ocrText").value, ocr_confidence: Number($("ocrConfidence").value || 0), ocr_status: $("ocrStatus").value,
+    uncertain_fields: state.lastOcrResult?.uncertain_fields || [], field_confidences: state.lastOcrResult?.field_confidences || {},
   };
 }
 
@@ -1007,7 +1206,7 @@ async function uploadInvoiceFile(file) {
   try {
     const data = await api("/api/attachments", { method: "POST", body: form });
     $("attachmentId").value = data.attachment.id; $("fileState").textContent = data.attachment.original_name;
-    setCurrentInvoicePreview({ name: data.attachment.original_name, mime: data.attachment.mime_type || file.type, url: `/api/attachments/${encodeURIComponent(data.attachment.id)}/content?inline=1` });
+    setCurrentInvoicePreview({ name: data.attachment.original_name, mime: data.attachment.mime_type || file.type, attachmentId: data.attachment.id, url: `/api/attachments/${encodeURIComponent(data.attachment.id)}/content?inline=1` });
     $("runOcrBtn").disabled = false; $("ocrProgressBar").style.width = "28%"; toast("附件已安全保存");
     await runOcr();
   } catch (error) { $("fileState").textContent = "附件上传失败"; toast(error.message, "error"); }
@@ -1030,6 +1229,7 @@ async function runOcr() {
 }
 
 function applyOcr(result) {
+  state.lastOcrResult = result;
   if (result.invoice_date) $("invoiceDate").value = result.invoice_date;
   if (Number(result.total_amount) > 0) $("invoiceAmount").value = result.total_amount;
   if (Number(result.tax_amount) >= 0) $("invoiceTax").value = result.tax_amount;
@@ -1043,6 +1243,8 @@ function applyOcr(result) {
   const confidenceText = result.classification_confidence ? ` · 分类可信度 ${Math.round(result.classification_confidence * 100)}%` : "";
   classification.textContent = `智能分类建议：${result.product_type || "其他"} · ${categoryText}${confidenceText} · ${result.classification_reason || "请人工确认"}`;
   classification.classList.remove("hidden");
+  markUncertainFields(result.uncertain_fields || []);
+  if ((result.uncertain_fields || []).length) toast(`有 ${result.uncertain_fields.length} 个识别字段不确定，已闪亮标注`, "error", 6500);
   updateReimbursementStatus();
 }
 
@@ -1115,6 +1317,7 @@ async function deleteSelectedInvoices() {
 
 function openBatchImport() {
   $("batchForm").reset(); $("batchResult").textContent = ""; clearBatchPreviews();
+  state.batchReviewIds = []; $("batchReviewList").innerHTML = ""; $("batchReviewList").classList.add("hidden");
   $("batchFilePreview").innerHTML = `<div class="empty-state">选择文件后将在这里显示缩略图，点击可放大查看原文件。</div>`;
   renderReferenceOptions();
   const defaults = state.settings.invoice_defaults || {};
@@ -1141,6 +1344,7 @@ async function submitBatch(event) {
   try {
     const endpoint = zipFiles.length ? "/api/import/zip" : "/api/import/files";
     const result = await apiUpload(endpoint, form, (progress) => setLoadingProgress(Math.max(1, Math.round(progress * .34)), "正在上传发票文件", `上传进度 ${progress}%`));
+    state.batchReviewIds = (result.drafts || []).map((item) => item.id).filter(Boolean);
     setLoadingProgress(40, zipFiles.length ? "压缩包已解压，正在建立识别队列" : "文件已保存，正在建立识别队列", `已创建 ${result.count || 0} 张发票草稿`);
     $("batchResult").textContent = `已导入 ${result.count} 个文件；${(result.skipped || []).length} 个文件被跳过。正在离线识别金额与分类……`;
     await loadInvoices();
@@ -1176,7 +1380,16 @@ async function pollBatchJobs(jobs, summary = {}) {
   $("batchResult").textContent = `${resultText} 请检查低置信度记录。`;
   toast(resultText, failedCount ? "error" : "success", 8000);
   if (state.currentView === "invoices") await loadInvoices();
+  await loadBatchReview(); await loadQualityIssues(true);
   loading(false);
+}
+
+async function loadBatchReview() {
+  const ids = state.batchReviewIds || [];
+  if (!ids.length) { $("batchReviewList").classList.add("hidden"); return; }
+  const items = (await Promise.all(ids.map((id) => api(`/api/invoices/${encodeURIComponent(id)}`).catch(() => null)))).filter(Boolean);
+  $("batchReviewList").innerHTML = items.map((item) => `<article class="batch-review-card ${invoiceQualityClass(item.id)}"><div><b>${escapeHtml(item.vendor || "待补充商家")} · ${money(item.total_amount)}</b><small>${escapeHtml(item.invoice_no || "无发票号码")} · ${escapeHtml(dateText(item.invoice_date))}</small></div><div><b>${escapeHtml(item.category_name || "未分类")}</b><small>费用分类</small></div><div><b>${escapeHtml(item.funding_source_name || "未选择")}</b><small>资金来源</small></div><button class="btn secondary" type="button" data-batch-review="${escapeHtml(item.id)}">逐张校对</button></article>`).join("");
+  $("batchReviewList").classList.remove("hidden");
 }
 
 async function loadSettlements() {
@@ -1227,7 +1440,12 @@ async function loadMembersAndUsers() {
 }
 
 function renderMemberCards() {
-  $("memberCards").innerHTML = state.members.filter((item) => !item.deleted_at).map((item) => `<article class="member-card ${item.active ? "" : "inactive"}" style="--member-color:${escapeHtml(item.avatar_color)}"><header><span class="member-avatar">${escapeHtml(item.name.slice(0, 1))}</span><div><h4>${escapeHtml(item.name)}</h4><small>${escapeHtml(item.department || "未分组")}</small></div></header><p>${item.student_id ? `学号 ${escapeHtml(item.student_id)}<br>` : ""}${item.phone ? `电话 ${escapeHtml(item.phone)}<br>` : ""}${item.active ? "有效成员" : "已停用，历史数据保留"}</p>${isAdmin() && canWrite() ? `<footer><button class="row-action" data-member-edit="${escapeHtml(item.id)}">✎</button>${item.active ? `<button class="row-action delete" data-member-archive="${escapeHtml(item.id)}">×</button>` : ""}</footer>` : ""}</article>`).join("");
+  $("memberCards").innerHTML = state.members.filter((item) => !item.deleted_at).map((item) => {
+    const avatar = item.avatar_url ? `<span class="member-avatar has-photo"><img src="${escapeHtml(item.avatar_url)}" alt="${escapeHtml(item.name)}头像"></span>` : `<span class="member-avatar">${escapeHtml(item.name.slice(0, 1))}</span>`;
+    const canAvatar = canWrite() && (isAdmin() || state.user.member_id === item.id);
+    const controls = `${canAvatar ? `<button class="row-action" data-member-avatar="${escapeHtml(item.id)}" title="更换头像">图</button>` : ""}${isAdmin() && canWrite() ? `<button class="row-action" data-member-edit="${escapeHtml(item.id)}">✎</button>${item.active ? `<button class="row-action delete" data-member-archive="${escapeHtml(item.id)}">×</button>` : ""}` : ""}`;
+    return `<article class="member-card ${item.active ? "" : "inactive"}" style="--member-color:${escapeHtml(item.avatar_color)}"><header>${avatar}<div><h4>${escapeHtml(item.name)}</h4><small>${escapeHtml(item.department || "未分组")}</small></div></header><p>${item.student_id ? `学号 ${escapeHtml(item.student_id)}<br>` : ""}${item.phone ? `电话 ${escapeHtml(item.phone)}<br>` : ""}${item.active ? "有效成员" : "已停用，历史数据保留"}</p>${controls ? `<footer>${controls}</footer>` : ""}</article>`;
+  }).join("");
 }
 
 function renderUsers() {
@@ -1237,14 +1455,26 @@ function renderUsers() {
 function openMember(item = null) {
   $("memberForm").reset(); $("memberId").value = item?.id || ""; $("memberName").value = item?.name || ""; $("memberDepartment").value = item?.department || "";
   $("memberStudentId").value = item?.student_id || ""; $("memberPhone").value = item?.phone || ""; $("memberEmail").value = item?.email || ""; $("memberColor").value = item?.avatar_color || "#27d3ff";
+  $("memberAvatarFile").value = "";
   $("memberDialogTitle").textContent = item ? "编辑成员" : "新增成员"; $("memberDialog").showModal();
 }
 
 async function saveMember(event) {
   event.preventDefault(); const id = $("memberId").value;
   const payload = { name: $("memberName").value, department: $("memberDepartment").value, student_id: $("memberStudentId").value, phone: $("memberPhone").value, email: $("memberEmail").value, avatar_color: $("memberColor").value, active: true };
-  try { await api(id ? `/api/members/${encodeURIComponent(id)}` : "/api/members", { method: id ? "PUT" : "POST", body: payload }); $("memberDialog").close(); toast("成员信息已保存"); await refreshCurrentView(true); }
+  try { const saved = await api(id ? `/api/members/${encodeURIComponent(id)}` : "/api/members", { method: id ? "PUT" : "POST", body: payload }); const avatarFile = $("memberAvatarFile").files[0]; if (avatarFile) await uploadMemberAvatar(saved.id || id, avatarFile); $("memberDialog").close(); toast("成员信息已保存"); await refreshCurrentView(true); }
   catch (error) { toast(error.message, "error"); }
+}
+
+async function uploadMemberAvatar(memberId, file) {
+  const form = new FormData(); form.append("file", file);
+  return api(`/api/members/${encodeURIComponent(memberId)}/avatar`, { method: "POST", body: form });
+}
+
+function chooseMemberAvatar(memberId) {
+  const input = document.createElement("input"); input.type = "file"; input.accept = "image/*,.gif";
+  input.addEventListener("change", async () => { if (!input.files[0]) return; try { await uploadMemberAvatar(memberId, input.files[0]); toast("头像已更新"); await refreshCurrentView(true); } catch (error) { toast(error.message, "error"); } });
+  input.click();
 }
 
 async function archiveMember(id) {
@@ -1279,6 +1509,8 @@ function renderCreators() {
     <h4>${escapeHtml(item.name)}</h4><p>${escapeHtml(item.note || "参与软件建设与维护")}</p>
     ${isAdmin() ? `<footer><button class="row-action" data-creator-edit="${escapeHtml(item.id)}" title="编辑创作者">✎</button></footer>` : ""}
   </article>`).join("") || `<div class="empty-state">尚未添加全赛季创作者名单</div>`;
+  $("referenceNotice").textContent = "引用内容仅用于燕翔车队内部发票报销与非商业技术学习；未复制外部网站媒体，图片和音乐只使用用户自有、授权或许可证明确素材。";
+  $("openSourceReferences").innerHTML = (state.openSourceReferences || []).map((item) => `<article class="reference-credit-item"><a href="${escapeHtml(item.url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(item.name)}</a><small>${escapeHtml(item.license)} · ${escapeHtml(item.use)}</small></article>`).join("");
 }
 
 async function loadSeasons() {
@@ -1447,6 +1679,8 @@ function renderLoadingCarEditor() {
 function openAppearance() {
   $("appearanceForm").reset(); applyDisplayMode(savedDisplayMode(), false); $("teamNameSetting").value = state.settings.team_name || "燕翔车队 Racing Team";
   $("backgroundOverlay").value = Math.round(Number(state.settings.background_overlay || .82) * 100); $("overlayValue").textContent = `${$("backgroundOverlay").value}%`;
+  $("loginPanelOpacity").value = Math.round(Number(state.settings.login_panel_opacity || .78) * 100); $("loginOpacityValue").textContent = `${$("loginPanelOpacity").value}%`;
+  $("loginRandomEnabled").checked = Boolean(state.settings.login_random_enabled); $("globalBackgroundRandom").checked = Boolean(state.settings.global_background_random);
   $("accentColor").value = state.settings.accent_color || "#27d3ff";
   $("loginSlideshowEnabled").checked = Boolean(state.settings.login_slideshow_enabled);
   $("loginTransition").value = state.settings.login_transition || "fade";
@@ -1533,6 +1767,9 @@ async function saveAppearance(event) {
       team_name: $("teamNameSetting").value,
       background_media_id: state.appearanceBackground?.attachment_id || "",
       background_overlay: Number($("backgroundOverlay").value) / 100,
+      login_panel_opacity: Number($("loginPanelOpacity").value) / 100,
+      login_random_enabled: $("loginRandomEnabled").checked,
+      global_background_random: $("globalBackgroundRandom").checked,
       accent_color: $("accentColor").value,
       login_slideshow_enabled: $("loginSlideshowEnabled").checked,
       login_transition: $("loginTransition").value,
@@ -1756,9 +1993,109 @@ function scheduleAutomaticUpdateCheck() {
   }, 1800);
 }
 
+async function openRecovery() {
+  try {
+    const status = await api("/api/auth/recovery-status");
+    if (!status.enabled) return toast("管理员未启用原始凭据找回", "error");
+    $("recoveryForm").reset(); $("recoveryHint").textContent = `请输入安装本版本时保存的原始管理员账号与密码（提示：${status.username_hint || "原始管理员账号"}）。连续失败 5 次将锁定 15 分钟。`;
+    $("recoveryDialog").showModal();
+  } catch (error) { toast(error.message, "error"); }
+}
+
+async function submitRecovery(event) {
+  event.preventDefault();
+  try {
+    const result = await api("/api/auth/recover-admin", { method: "POST", body: { original_username: $("recoveryOriginalUsername").value, original_password: $("recoveryOriginalPassword").value, new_username: $("recoveryNewUsername").value, new_password: $("recoveryNewPassword").value } });
+    $("recoveryDialog").close(); $("loginUsername").value = $("recoveryNewUsername").value; $("loginPassword").value = ""; toast(result.message || "账号已重置", "success", 7000);
+  } catch (error) { toast(error.message, "error", 7000); }
+}
+
+async function openRecoverySettings() {
+  $("recoverySettingsForm").reset();
+  try { const status = await api("/api/auth/recovery-status"); $("recoverySettingsEnabled").checked = Boolean(status.enabled); $("recoverySettingsDialog").showModal(); }
+  catch (error) { toast(error.message, "error"); }
+}
+
+async function saveRecoverySettings(event) {
+  event.preventDefault();
+  try { await api("/api/admin/recovery", { method: "PUT", body: { enabled: $("recoverySettingsEnabled").checked, current_password: $("recoverySettingsCurrentPassword").value, original_username: $("recoverySettingsOriginalUsername").value, original_password: $("recoverySettingsOriginalPassword").value } }); $("recoverySettingsDialog").close(); toast("管理员找回设置已更新"); }
+  catch (error) { toast(error.message, "error", 6000); }
+}
+
+function openFeedback() {
+  $("feedbackForm").reset();
+  const member = state.members.find((item) => item.id === state.user?.member_id);
+  $("feedbackName").value = member?.name || ""; $("feedbackSeason").value = state.season?.name || ""; $("feedbackDepartment").value = member?.department || "";
+  $("feedbackDialog").showModal();
+}
+
+function captureDraftForm(form) {
+  return [...form.elements].filter((element) => element.name !== "" || element.id).filter((element) => !["file", "submit", "button", "hidden"].includes(element.type)).map((element) => ({ key: element.type === "radio" ? `@radio:${element.name}:${element.value}` : (element.id || element.name), value: ["checkbox", "radio"].includes(element.type) ? Boolean(element.checked) : element.value }));
+}
+
+function applyDraftSnapshot(snapshot) {
+  const form = state.activeDraftForm; if (!form) return;
+  snapshot.forEach((item) => { let element; if (item.key.startsWith("@radio:")) { const [, , name, value] = item.key.split(":"); element = form.querySelector(`input[type="radio"][name="${CSS.escape(name)}"][value="${CSS.escape(value)}"]`); } else element = form.querySelector(`#${CSS.escape(item.key)}`) || form.elements.namedItem(item.key); if (!element || !element.type) return; if (["checkbox", "radio"].includes(element.type)) element.checked = Boolean(item.value); else element.value = item.value; element.dispatchEvent(new Event("change", { bubbles: true })); });
+}
+
+function updateDraftButtons() {
+  const active = Boolean(state.activeDraftForm);
+  $("globalActionBar").classList.toggle("hidden", !active);
+  $("globalUndoBtn").disabled = !active || state.draftHistoryIndex <= 0;
+  $("globalRedoBtn").disabled = !active || state.draftHistoryIndex >= state.draftHistory.length - 1;
+}
+
+function activateDraftForm(form) {
+  if (!form || ["loginForm", "decisionForm", "shortcutsForm", "recoveryForm"].includes(form.id)) return;
+  state.activeDraftForm = form; state.draftHistory = [captureDraftForm(form)]; state.draftHistoryIndex = 0;
+  form.closest("dialog")?.appendChild($("globalActionBar")); updateDraftButtons();
+}
+
+function recordDraftChange(form) {
+  if (!form?.closest("dialog[open]")) return;
+  if (state.activeDraftForm !== form) activateDraftForm(form);
+  clearTimeout(state.draftHistoryTimer); state.draftHistoryTimer = setTimeout(() => {
+    const snapshot = captureDraftForm(form), encoded = JSON.stringify(snapshot), current = JSON.stringify(state.draftHistory[state.draftHistoryIndex] || []);
+    if (encoded === current) return;
+    state.draftHistory = state.draftHistory.slice(0, state.draftHistoryIndex + 1); state.draftHistory.push(snapshot);
+    if (state.draftHistory.length > 60) state.draftHistory.shift(); else state.draftHistoryIndex += 1;
+    updateDraftButtons();
+  }, 180);
+}
+
+function moveDraftHistory(direction) {
+  const target = state.draftHistoryIndex + direction;
+  if (!state.activeDraftForm || target < 0 || target >= state.draftHistory.length) return;
+  state.draftHistoryIndex = target; applyDraftSnapshot(state.draftHistory[target]); updateDraftButtons();
+}
+
+function releaseDraftForm(dialog) {
+  if (!state.activeDraftForm || dialog?.contains(state.activeDraftForm)) {
+    state.activeDraftForm = null; state.draftHistory = []; state.draftHistoryIndex = -1;
+    document.querySelector(".content-shell")?.appendChild($("globalActionBar")); updateDraftButtons();
+  }
+}
+
+function handleDraftHistoryShortcut(event) {
+  if (!state.activeDraftForm || !event.ctrlKey || event.altKey || event.metaKey) return;
+  if (event.key.toLowerCase() === "z") { event.preventDefault(); moveDraftHistory(event.shiftKey ? 1 : -1); }
+  else if (event.key.toLowerCase() === "y") { event.preventDefault(); moveDraftHistory(1); }
+}
+
+async function submitFeedback(event) {
+  event.preventDefault(); const form = new FormData();
+  form.append("reporter_name", $("feedbackName").value); form.append("season", $("feedbackSeason").value); form.append("department", $("feedbackDepartment").value); form.append("contact", $("feedbackContact").value); form.append("description", $("feedbackDescription").value); form.append("consent_public_attachment", $("feedbackPublicConsent").checked ? "true" : "false");
+  [...$("feedbackFiles").files].forEach((file) => form.append("files", file));
+  loading(true, "正在打包问题反馈", 8, "个人信息不会写入公开 GitHub 问题", true);
+  try { const result = await api("/api/feedback", { method: "POST", body: form }); $("feedbackDialog").close(); toast(result.status === "sent" ? "问题反馈已提交" : (result.notice || "反馈已保留到本机待发送队列"), result.status === "sent" ? "success" : "error", 8000); }
+  catch (error) { toast(error.message, "error", 8000); }
+  finally { loading(false); }
+}
+
 function setupEvents() {
   $$('[data-theme-select]').forEach((select) => select.addEventListener("change", () => {
     const mode = applyDisplayMode(select.value);
+    persistPersonalPreferences({ theme: mode }).catch(() => {});
     toast(`已切换为${DISPLAY_MODE_LABELS[mode]}`);
   }));
   $("decisionForm").addEventListener("submit", (event) => {
@@ -1782,6 +2119,8 @@ function setupEvents() {
     const visible = $("loginPassword").type === "text"; $("loginPassword").type = visible ? "password" : "text";
     $("toggleLoginPassword").textContent = visible ? "显示" : "隐藏"; $("toggleLoginPassword").setAttribute("aria-pressed", String(!visible)); $("toggleLoginPassword").setAttribute("aria-label", visible ? "显示密码" : "隐藏密码");
   });
+  $("forgotPasswordBtn").addEventListener("click", openRecovery); $("recoveryForm").addEventListener("submit", submitRecovery);
+  $("openRecoverySettingsBtn").addEventListener("click", openRecoverySettings); $("recoverySettingsForm").addEventListener("submit", saveRecoverySettings);
   $("loginForm").addEventListener("submit", async (event) => {
     event.preventDefault(); $("loginError").textContent = "";
     try { const result = await api("/api/auth/login", { method: "POST", body: { username: $("loginUsername").value, password: $("loginPassword").value } }); state.csrf = result.csrf_token; state.user = result.user; await loadBootstrap(); }
@@ -1795,7 +2134,7 @@ function setupEvents() {
   $("mobileMenuBtn").addEventListener("click", () => $("mainNav").closest(".sidebar").classList.toggle("open"));
   $("quickAddBtn").addEventListener("click", openNewInvoice); $("invoiceAddBtn").addEventListener("click", openNewInvoice);
   $("invoiceFilterBtn").addEventListener("click", loadInvoices); $("invoiceSearch").addEventListener("keydown", (event) => { if (event.key === "Enter") loadInvoices(); });
-  $("invoiceTable").addEventListener("click", (event) => { const button = event.target.closest("[data-invoice-action]"); if (!button) return; if (button.dataset.invoiceAction === "delete") deleteInvoiceRecord(button.dataset.id); else openInvoice(button.dataset.id, button.dataset.invoiceAction === "view").catch((error) => toast(error.message, "error")); });
+  $("invoiceTable").addEventListener("click", (event) => { const attachment = event.target.closest("[data-attachment-open]"); if (attachment) return openLocalAttachment(attachment.dataset.attachmentOpen); const button = event.target.closest("[data-invoice-action]"); if (!button) return; if (button.dataset.invoiceAction === "delete") deleteInvoiceRecord(button.dataset.id); else openInvoice(button.dataset.id, button.dataset.invoiceAction === "view").catch((error) => toast(error.message, "error")); });
   $("invoiceTable").addEventListener("change", (event) => { const input = event.target.closest(".invoice-select"); if (!input) return; if (input.checked) state.selectedInvoiceIds.add(input.dataset.id); else state.selectedInvoiceIds.delete(input.dataset.id); renderInvoiceSelection(); });
   $("selectAllInvoices").addEventListener("change", (event) => { state.invoices.forEach((item) => event.target.checked ? state.selectedInvoiceIds.add(item.id) : state.selectedInvoiceIds.delete(item.id)); $$("#invoiceTable .invoice-select").forEach((input) => { input.checked = event.target.checked; }); renderInvoiceSelection(); });
   $("exportCsvBtn").addEventListener("click", () => downloadCsv()); $("batchExportSelectedBtn").addEventListener("click", () => downloadCsv([...state.selectedInvoiceIds]));
@@ -1804,6 +2143,9 @@ function setupEvents() {
   $("batchActionForm").addEventListener("submit", submitBatchAction); $("batchActionType").addEventListener("change", updateBatchActionVisibility); $("batchActionStatus").addEventListener("change", updateBatchActionVisibility); $("batchActionRatio").addEventListener("input", updateBatchActionVisibility);
   $("invoiceForm").addEventListener("submit", saveInvoiceForm); $("invoiceFile").addEventListener("change", (event) => uploadInvoiceFile(event.target.files[0])); $("runOcrBtn").addEventListener("click", runOcr);
   $("invoiceAttachmentPreview").addEventListener("click", (event) => { if (event.target.closest("[data-open-current-preview]")) openAttachmentViewer(state.currentInvoicePreview); });
+  $("attachmentOpenOriginal").addEventListener("click", () => openLocalAttachment());
+  $("supportingAttachmentFiles").addEventListener("change", (event) => uploadSupportingAttachments(event.target.files));
+  $("supportingAttachmentList").addEventListener("click", (event) => { const open = event.target.closest("[data-support-open]"), remove = event.target.closest("[data-support-delete]"); if (open) openLocalAttachment(open.dataset.supportOpen); if (remove) deleteSupportingAttachment(remove.dataset.supportDelete); });
   $("attachmentZoomOut").addEventListener("click", () => applyAttachmentZoom(state.attachmentViewerZoom - .15)); $("attachmentZoomIn").addEventListener("click", () => applyAttachmentZoom(state.attachmentViewerZoom + .15)); $("attachmentZoomReset").addEventListener("click", () => applyAttachmentZoom(1));
   $("invoiceAmount").addEventListener("input", updateReimbursementStatus); $("reimbursedAmount").addEventListener("input", updateReimbursementStatus);
   $("invoicePayer").addEventListener("change", () => renderSplitMembers(selectedSplitIds(), selectedWeights()));
@@ -1813,12 +2155,13 @@ function setupEvents() {
   $("batchImportBtn").addEventListener("click", openBatchImport); $("batchForm").addEventListener("submit", submitBatch);
   $("batchFile").addEventListener("change", (event) => renderBatchPreviews(event.target.files)); $("batchBurden").addEventListener("change", updateBatchSplitVisibility);
   $("batchFilePreview").addEventListener("click", (event) => { const button = event.target.closest("[data-batch-preview]"); if (button) openAttachmentViewer(state.batchPreviewFiles[Number(button.dataset.batchPreview)]); });
+  $("batchReviewList").addEventListener("click", (event) => { const button = event.target.closest("[data-batch-review]"); if (button) openInvoice(button.dataset.batchReview).catch((error) => toast(error.message, "error")); });
   $("recordSettlementBtn").addEventListener("click", () => openSettlement()); $("settlementForm").addEventListener("submit", saveSettlement);
   $("transferRecommendations").addEventListener("click", (event) => { const button = event.target.closest("[data-transfer-from]"); if (button) openSettlement(button.dataset.transferFrom, button.dataset.transferTo, button.dataset.transferAmount); });
   $("settlementHistory").addEventListener("click", (event) => { const button = event.target.closest("[data-settlement-delete]"); if (button) deleteSettlement(button.dataset.settlementDelete); });
   $("reportRunBtn").addEventListener("click", loadReports);
   $("addMemberBtn").addEventListener("click", () => openMember()); $("memberForm").addEventListener("submit", saveMember);
-  $("memberCards").addEventListener("click", (event) => { const edit = event.target.closest("[data-member-edit]"), archive = event.target.closest("[data-member-archive]"); if (edit) openMember(state.members.find((item) => item.id === edit.dataset.memberEdit)); if (archive) archiveMember(archive.dataset.memberArchive); });
+  $("memberCards").addEventListener("click", (event) => { const edit = event.target.closest("[data-member-edit]"), archive = event.target.closest("[data-member-archive]"), avatar = event.target.closest("[data-member-avatar]"); if (edit) openMember(state.members.find((item) => item.id === edit.dataset.memberEdit)); if (archive) archiveMember(archive.dataset.memberArchive); if (avatar) chooseMemberAvatar(avatar.dataset.memberAvatar); });
   $("addUserBtn").addEventListener("click", () => openUser()); $("userForm").addEventListener("submit", saveUser);
   $("userTable").addEventListener("click", (event) => { const button = event.target.closest("[data-user-edit]"); if (button) openUser(state.users.find((item) => item.id === button.dataset.userEdit)); });
   $("seasonBadgeBtn").addEventListener("click", openSeasonManager); $("openSeasonManagerBtn").addEventListener("click", openSeasonManager);
@@ -1839,6 +2182,7 @@ function setupEvents() {
   $("categoryManagerList").addEventListener("click", (event) => { const button = event.target.closest("[data-category-edit]"); if (button) editCategory(state.categories.find((item) => item.id === button.dataset.categoryEdit)); });
   $("sourceManagerList").addEventListener("click", (event) => { const button = event.target.closest("[data-source-edit]"); if (button) editSource(state.fundingSources.find((item) => item.id === button.dataset.sourceEdit)); });
   $("openAppearanceBtn").addEventListener("click", openAppearance); $("appearanceForm").addEventListener("submit", saveAppearance); $("backgroundOverlay").addEventListener("input", () => $("overlayValue").textContent = `${$("backgroundOverlay").value}%`);
+  $("loginPanelOpacity").addEventListener("input", () => { $("loginOpacityValue").textContent = `${$("loginPanelOpacity").value}%`; document.documentElement.style.setProperty("--login-panel-opacity", String(Number($("loginPanelOpacity").value) / 100)); });
   $("appearanceDialog").addEventListener("click", (event) => { const preset = event.target.closest("[data-overlay-preset]"); if (!preset) return; $("backgroundOverlay").value = preset.dataset.overlayPreset; $("overlayValue").textContent = `${preset.dataset.overlayPreset}%`; document.documentElement.style.setProperty("--background-overlay", String(Number(preset.dataset.overlayPreset) / 100)); });
   $("backgroundFile").addEventListener("change", (event) => chooseBackgroundFile(event.target.files[0])); $("loginMediaFiles").addEventListener("change", (event) => addLoginMediaFiles(event.target.files));
   $("loadingCarFiles").addEventListener("change", (event) => addLoadingCarFiles(event.target.files)); $("resetLoadingCarsBtn").addEventListener("click", resetLoadingCars);
@@ -1854,11 +2198,23 @@ function setupEvents() {
   $("openUpdateBtn").addEventListener("click", openUpdateDialog); $("checkUpdateBtn").addEventListener("click", () => checkForUpdates(true)); $("installUpdateBtn").addEventListener("click", installLatestUpdate);
   $("autoUpdateCheck").addEventListener("change", (event) => { try { localStorage.setItem(AUTO_UPDATE_STORAGE_KEY, event.target.checked ? "1" : "0"); } catch (_) { /* 当前会话仍可使用 */ } toast(event.target.checked ? "已启用每日自动检查更新" : "已关闭启动后自动检查"); });
   $("updateInstallMode").addEventListener("change", (event) => applyUpdateInstallMode(event.target.value, true));
+  $("openPersonalSettingsBtn").addEventListener("click", openPersonalSettings); $("personalAudioFiles").addEventListener("change", (event) => uploadPersonalAudio(event.target.files));
+  $("personalAudioList").addEventListener("click", (event) => { const play = event.target.closest("[data-audio-play]"), remove = event.target.closest("[data-audio-delete]"); if (play) playPersonalAudio(Number(play.dataset.audioPlay)); if (remove) deletePersonalAudio(remove.dataset.audioDelete); });
+  $("personalAudioMode").addEventListener("change", () => persistPersonalPreferences()); $("personalAudioEnabled").addEventListener("change", () => { $("personalAudioPlayer").muted = !$("personalAudioEnabled").checked; persistPersonalPreferences(); });
+  $("personalAudioVolume").addEventListener("input", () => { $("personalAudioVolumeText").textContent = `${$("personalAudioVolume").value}%`; $("personalAudioPlayer").volume = Number($("personalAudioVolume").value) / 100; }); $("personalAudioVolume").addEventListener("change", () => persistPersonalPreferences()); $("personalAudioPlayer").addEventListener("ended", advancePersonalAudio);
+  $("exportPersonalSettingsBtn").addEventListener("click", exportPersonalSettings); $("importPersonalSettingsInput").addEventListener("change", (event) => importPersonalSettings(event.target.files[0]));
+  $("openFeedbackBtn").addEventListener("click", openFeedback); $("feedbackForm").addEventListener("submit", submitFeedback);
+  $("qualityFaultToggle").addEventListener("click", () => $("qualityFaultPanel").classList.toggle("hidden")); $("qualityFaultClose").addEventListener("click", () => $("qualityFaultPanel").classList.add("hidden"));
+  $("qualityFaultList").addEventListener("click", (event) => { const open = event.target.closest("[data-quality-open]"), resolve = event.target.closest("[data-quality-resolve]"); if (open) openQualityIssue(open.dataset.qualityOpen); if (resolve) resolveQualityIssue(resolve.dataset.qualityResolve); });
+  $("globalSaveBtn").addEventListener("click", () => state.activeDraftForm?.requestSubmit()); $("globalUndoBtn").addEventListener("click", () => moveDraftHistory(-1)); $("globalRedoBtn").addEventListener("click", () => moveDraftHistory(1));
+  document.addEventListener("keydown", handleDraftHistoryShortcut, true); document.addEventListener("input", (event) => recordDraftChange(event.target.closest("form")), true); document.addEventListener("change", (event) => recordDraftChange(event.target.closest("form")), true);
   $$('[data-close]').forEach((button) => button.addEventListener("click", () => $(button.dataset.close).close()));
-  $$("dialog").forEach((dialog) => dialog.addEventListener("click", (event) => {
+  $$("dialog").forEach((dialog) => { dialog.addEventListener("close", () => releaseDraftForm(dialog)); dialog.addEventListener("click", (event) => {
     if (event.target !== dialog) return;
     if (dialog.id === "decisionDialog") finishDecision(false); else dialog.close();
-  }));
+  }); });
+  const draftObserver = new MutationObserver((records) => records.forEach((record) => { const dialog = record.target; if (dialog.open) requestAnimationFrame(() => activateDraftForm(dialog.querySelector("form"))); }));
+  $$("dialog").forEach((dialog) => draftObserver.observe(dialog, { attributes: true, attributeFilter: ["open"] }));
   window.addEventListener("resize", () => { clearTimeout(state.resizeTimer); state.resizeTimer = setTimeout(() => { if (state.currentView === "dashboard") renderDashboard(); }, 160); });
 }
 

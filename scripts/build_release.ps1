@@ -1,5 +1,5 @@
 ﻿param(
-  [string]$Version = "2.2.4",
+  [string]$Version = "2.3.0",
   [string]$PythonPath = "",
   [switch]$SkipBuild,
   [switch]$SkipTutorialPdf,
@@ -88,7 +88,7 @@ $packagesToHash = @($updateZip)
 if (-not $PatchOnly) { $packagesToHash += $fullZip }
 foreach ($package in $packagesToHash) {
   $hash = (Get-FileHash -LiteralPath $package -Algorithm SHA256).Hash.ToLowerInvariant()
-  "$hash  $([IO.Path]::GetFileName($package))" | Out-File -LiteralPath "$package.sha256" -Encoding ascii
+  "$hash  $([IO.Path]::GetFileName($package))" | Out-File -LiteralPath "$package.sha256" -Encoding utf8
 }
 
 Write-Host "已生成："

@@ -105,6 +105,13 @@ def invoice_payload(conn: sqlite3.Connection, invoice_id: str) -> dict[str, Any]
         split["share_amount"] = yuan(split.pop("share_cents"))
         split["paid_amount"] = yuan(split.pop("paid_cents"))
     item["splits"] = splits
+    item["supporting_attachments"] = [dict(row) for row in conn.execute(
+        """SELECT r.id AS relation_id,r.attachment_kind,r.label,r.sort_order,
+        a.id AS attachment_id,a.original_name,a.mime_type,a.size_bytes,a.created_at
+        FROM invoice_supporting_attachments r JOIN attachments a ON a.id=r.attachment_id
+        WHERE r.invoice_id=? AND a.deleted_at IS NULL ORDER BY r.sort_order,r.created_at""",
+        (invoice_id,),
+    ).fetchall()]
     return item
 
 

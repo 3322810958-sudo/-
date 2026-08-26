@@ -354,6 +354,92 @@ CREATE TABLE IF NOT EXISTS ocr_jobs (
   updated_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS invoice_supporting_attachments (
+  id TEXT PRIMARY KEY,
+  season_id TEXT NOT NULL REFERENCES seasons(id),
+  invoice_id TEXT NOT NULL REFERENCES invoices(id) ON DELETE CASCADE,
+  attachment_id TEXT NOT NULL REFERENCES attachments(id) ON DELETE CASCADE,
+  attachment_kind TEXT NOT NULL DEFAULT 'other' CHECK(attachment_kind IN ('shopping','signature','other')),
+  label TEXT NOT NULL DEFAULT '',
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  created_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE(invoice_id,attachment_id)
+);
+
+CREATE TABLE IF NOT EXISTS invoice_quality_issues (
+  id TEXT PRIMARY KEY,
+  season_id TEXT NOT NULL REFERENCES seasons(id),
+  invoice_id TEXT REFERENCES invoices(id) ON DELETE CASCADE,
+  issue_type TEXT NOT NULL CHECK(issue_type IN ('low_confidence','import_failed','ocr_failed','export_failed','conversion_failed','attachment_missing','other')),
+  severity TEXT NOT NULL DEFAULT 'warning' CHECK(severity IN ('warning','error')),
+  field_name TEXT NOT NULL DEFAULT '',
+  message TEXT NOT NULL,
+  details_json TEXT NOT NULL DEFAULT '{}',
+  status TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open','resolved')),
+  created_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS user_preferences (
+  user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+  settings_json TEXT NOT NULL DEFAULT '{}',
+  version INTEGER NOT NULL DEFAULT 1,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS user_media (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  attachment_id TEXT NOT NULL REFERENCES attachments(id) ON DELETE CASCADE,
+  media_type TEXT NOT NULL CHECK(media_type IN ('audio','background','avatar')),
+  title TEXT NOT NULL DEFAULT '',
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  active INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS admin_recovery (
+  user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+  original_username_hash TEXT NOT NULL,
+  original_password_hash TEXT NOT NULL,
+  username_hint TEXT NOT NULL DEFAULT '',
+  enabled INTEGER NOT NULL DEFAULT 1,
+  failed_attempts INTEGER NOT NULL DEFAULT 0,
+  locked_until TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS feedback_reports (
+  id TEXT PRIMARY KEY,
+  user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+  season_id TEXT REFERENCES seasons(id) ON DELETE SET NULL,
+  reporter_name TEXT NOT NULL DEFAULT '',
+  department TEXT NOT NULL DEFAULT '',
+  contact TEXT NOT NULL DEFAULT '',
+  description TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'queued' CHECK(status IN ('queued','sent','failed')),
+  delivery_method TEXT NOT NULL DEFAULT 'local_queue',
+  delivery_reference TEXT NOT NULL DEFAULT '',
+  last_error TEXT NOT NULL DEFAULT '',
+  archive_name TEXT NOT NULL DEFAULT '',
+  consent_public_attachment INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS feedback_attachments (
+  id TEXT PRIMARY KEY,
+  report_id TEXT NOT NULL REFERENCES feedback_reports(id) ON DELETE CASCADE,
+  attachment_id TEXT NOT NULL REFERENCES attachments(id) ON DELETE CASCADE,
+  original_name TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+
 DROP INDEX IF EXISTS idx_attachments_sha_active;
 CREATE INDEX IF NOT EXISTS idx_attachments_sha_active ON attachments(sha256) WHERE deleted_at IS NULL;
 CREATE INDEX IF NOT EXISTS idx_invoices_date ON invoices(invoice_date DESC) WHERE deleted_at IS NULL;
@@ -365,6 +451,11 @@ CREATE INDEX IF NOT EXISTS idx_splits_member ON invoice_splits(member_id) WHERE 
 CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_logs(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_sync_unpushed ON sync_events(pushed, seq);
 CREATE INDEX IF NOT EXISTS idx_sync_modified ON sync_events(modified_at);
+CREATE INDEX IF NOT EXISTS idx_supporting_invoice ON invoice_supporting_attachments(invoice_id,sort_order);
+CREATE INDEX IF NOT EXISTS idx_quality_season_status ON invoice_quality_issues(season_id,status,issue_type,created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_quality_invoice ON invoice_quality_issues(invoice_id,status);
+CREATE INDEX IF NOT EXISTS idx_user_media_owner ON user_media(user_id,media_type,sort_order);
+CREATE INDEX IF NOT EXISTS idx_feedback_status ON feedback_reports(status,created_at DESC);
 """
 
 
@@ -403,7 +494,8 @@ def set_setting(conn: sqlite3.Connection, key: str, value: str, *, sync: bool = 
     if sync and key in {
         "team_name", "background_image", "background_media_id", "background_media_kind",
         "background_overlay", "accent_color", "login_slideshow_enabled", "login_slides",
-        "login_transition", "loading_cars", "classification_rules", "invoice_defaults", "current_season_id",
+        "login_transition", "loading_cars", "login_panel_opacity", "login_random_enabled",
+        "global_background_random", "classification_rules", "invoice_defaults", "current_season_id",
     }:
         enqueue_sync_event(conn, "app_settings", key, "upsert", {
             "key": key, "value": value, "updated_at": now, "version": version, "device_id": device_id
@@ -484,6 +576,15 @@ def _migrate_season_schema(conn: sqlite3.Connection) -> None:
             "燕翔车队经费管理系统创作者", 1, 0, now, now, 1, device_id,
         ),
     )
+    conn.execute(
+        """INSERT OR IGNORE INTO creators(
+        id,season_id,name,department,role_title,note,active,sort_order,created_at,updated_at,version,device_id,deleted_at
+        ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,NULL)""",
+        (
+            "creator_2026_duan_lipei", DEFAULT_SEASON_ID, "段力裴", "电气部", "高压",
+            "燕翔车队经费管理系统创作者", 1, 1, now, now, 1, device_id,
+        ),
+    )
     for statement in (
         "CREATE INDEX IF NOT EXISTS idx_members_season ON members(season_id,active,sort_order) WHERE deleted_at IS NULL",
         "CREATE INDEX IF NOT EXISTS idx_attachments_season ON attachments(season_id,created_at DESC) WHERE deleted_at IS NULL",
@@ -495,7 +596,27 @@ def _migrate_season_schema(conn: sqlite3.Connection) -> None:
         "CREATE INDEX IF NOT EXISTS idx_snapshots_season ON snapshots(season_id,created_at DESC)",
     ):
         conn.execute(statement)
-    conn.execute("INSERT OR REPLACE INTO meta(key,value) VALUES('schema_version','4')")
+    conn.execute("INSERT OR REPLACE INTO meta(key,value) VALUES('schema_version','7')")
+
+
+def _migrate_v23_schema(conn: sqlite3.Connection) -> None:
+    _ensure_column(conn, "members", "avatar_attachment_id", "TEXT REFERENCES attachments(id) ON DELETE SET NULL")
+    now = utc_now()
+    admin = conn.execute(
+        """SELECT id,username,password_hash FROM users
+        WHERE role='admin' AND active=1 AND deleted_at IS NULL ORDER BY created_at LIMIT 1"""
+    ).fetchone()
+    if admin:
+        conn.execute(
+            """INSERT OR IGNORE INTO admin_recovery(
+            user_id,original_username_hash,original_password_hash,username_hint,enabled,
+            failed_attempts,locked_until,created_at,updated_at
+            ) VALUES(?,?,?,?,1,0,NULL,?,?)""",
+            (
+                admin["id"], hashlib.sha256(str(admin["username"]).strip().lower().encode("utf-8")).hexdigest(),
+                admin["password_hash"], f"{str(admin['username'])[:1]}***（原始管理员账号）", now, now,
+            ),
+        )
 
 
 def audit(
@@ -735,6 +856,10 @@ def seed_defaults(conn: sqlite3.Connection) -> None:
         "login_slides": "[]",
         "login_transition": "fade",
         "loading_cars": "[]",
+        "login_panel_opacity": "0.78",
+        "login_random_enabled": "0",
+        "global_background_random": "0",
+        "ocr_confidence_threshold": "0.80",
         "invoice_defaults": "{}",
         "classification_rules": "[]",
         "current_season_id": DEFAULT_SEASON_ID,
@@ -784,8 +909,9 @@ def init_db() -> None:
             ocr_columns = {row[1] for row in conn.execute("PRAGMA table_info(ocr_jobs)").fetchall()}
             if "invoice_id" not in ocr_columns:
                 conn.execute("ALTER TABLE ocr_jobs ADD COLUMN invoice_id TEXT REFERENCES invoices(id) ON DELETE SET NULL")
-            conn.execute("PRAGMA optimize")
             seed_defaults(conn)
+            _migrate_v23_schema(conn)
+            conn.execute("PRAGMA optimize")
             conn.commit()
         except Exception:
             conn.rollback()

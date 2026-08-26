@@ -12,6 +12,7 @@ import sqlite3
 import tempfile
 import threading
 import zipfile
+from datetime import UTC, datetime, timedelta
 from urllib.parse import quote
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -84,8 +85,19 @@ from .database import (
     transaction,
     utc_now,
 )
+from .feedback import deliver_feedback
 from .ocr_engine import create_ocr_job, get_ocr_job, parse_invoice_text, warmup_ocr
-from .security import hash_password, token_hash, validate_new_password, validate_username
+from .platform_features import (
+    OFFICE_EXCEL,
+    OFFICE_POWERPOINT,
+    OFFICE_WORD,
+    TEXT_EXTENSIONS,
+    convert_office_to_pdf,
+    open_local_file,
+    text_to_pdf,
+)
+from .quality import list_issues, record_issue, resolve_issue, sync_ocr_issues
+from .security import hash_password, token_hash, validate_new_password, validate_username, verify_password
 from .sync_engine import SyncError, apply_events, events_after, perform_sync, sync_config, valid_sync_key
 from .updater import check_for_update, get_update_job, schedule_update_install, start_update_download
 from .wallpaper_engine import scan_wallpapers, wallpaper_item
@@ -96,7 +108,20 @@ STOP_EVENT = threading.Event()
 APPEARANCE_SETTING_KEYS = (
     "team_name", "background_image", "background_media_id", "background_media_kind",
     "background_overlay", "accent_color", "login_slideshow_enabled", "login_slides",
-    "login_transition", "loading_cars",
+    "login_transition", "loading_cars", "login_panel_opacity", "login_random_enabled",
+    "global_background_random",
+)
+
+OPEN_SOURCE_REFERENCES = (
+    {"name": "PaddleOCR", "url": "https://github.com/PaddlePaddle/PaddleOCR", "license": "Apache-2.0", "use": "本地 OCR 与置信度设计参考"},
+    {"name": "pypdf", "url": "https://github.com/py-pdf/pypdf", "license": "BSD-3-Clause", "use": "PDF 页面合并"},
+    {"name": "pywebview", "url": "https://github.com/r0x0r/pywebview", "license": "BSD-3-Clause", "use": "Windows 桌面容器兼容性"},
+    {"name": "Tabler", "url": "https://github.com/tabler/tabler", "license": "MIT", "use": "问题图例与响应式操作区设计参考"},
+    {"name": "Invoice-Manager", "url": "https://github.com/stone16/Invoice-Manager", "license": "MIT", "use": "中文发票异步处理设计参考"},
+    {"name": "fp-reimbursement-system", "url": "https://github.com/zhangdexuan/fp-reimbursement-system", "license": "MIT", "use": "本地报销与附件 PDF 工作流参考"},
+    {"name": "keepr", "url": "https://github.com/BlinkingSun/keepr", "license": "MIT", "use": "离线优先与问题标记参考"},
+    {"name": "LibreOffice", "url": "https://www.libreoffice.org/", "license": "MPL-2.0", "use": "调用本机安装程序转换办公附件"},
+    {"name": "HuggingPT UI Examples", "url": "https://huggingpt.com/ui-examples/", "license": "仅界面布局灵感", "use": "未复制网站媒体或代码"},
 )
 
 
@@ -137,7 +162,7 @@ def _sync_loop() -> None:
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     init_db()
-    if os.environ.get("YXRT_OCR_WARMUP", "1") == "1" and "PYTEST_CURRENT_TEST" not in os.environ:
+    if os.environ.get("YXRT_OCR_WARMUP", "0") == "1" and "PYTEST_CURRENT_TEST" not in os.environ:
         warmup_ocr()
     STOP_EVENT.clear()
     worker = threading.Thread(target=_sync_loop, name="yxrt-sync", daemon=True)
@@ -263,6 +288,9 @@ def _appearance_settings(conn: sqlite3.Connection) -> dict[str, Any]:
     values.setdefault("login_slideshow_enabled", "1")
     values.setdefault("login_transition", "fade")
     values.setdefault("loading_cars", "[]")
+    values.setdefault("login_panel_opacity", "0.78")
+    values.setdefault("login_random_enabled", "0")
+    values.setdefault("global_background_random", "0")
 
     background_id = str(values.get("background_media_id") or "")
     values["background_media_url"] = f"/api/public/media/{background_id}" if background_id else ""
@@ -298,6 +326,12 @@ def _appearance_settings(conn: sqlite3.Connection) -> dict[str, Any]:
             })
     values["login_slides"] = slides
     values["login_slideshow_enabled"] = str(values["login_slideshow_enabled"]) == "1"
+    values["login_random_enabled"] = str(values["login_random_enabled"]) == "1"
+    values["global_background_random"] = str(values["global_background_random"]) == "1"
+    try:
+        values["login_panel_opacity"] = max(0.35, min(1.0, float(values["login_panel_opacity"])))
+    except (TypeError, ValueError):
+        values["login_panel_opacity"] = 0.78
     raw_cars = values.get("loading_cars") or "[]"
     try:
         parsed_cars = json.loads(raw_cars) if isinstance(raw_cars, str) else raw_cars
@@ -384,6 +418,14 @@ async def public_appearance() -> dict[str, Any]:
     return {"version": __version__, "settings": settings}
 
 
+@app.get("/api/public/references")
+async def public_references() -> dict[str, Any]:
+    return {
+        "items": list(OPEN_SOURCE_REFERENCES),
+        "notice": "引用内容仅用于燕翔车队内部发票报销与非商业技术学习；图片、音乐未使用来源不明素材。",
+    }
+
+
 @app.get("/api/public/media/{attachment_id}")
 async def public_appearance_media(attachment_id: str) -> FileResponse:
     with connect() as conn:
@@ -403,6 +445,122 @@ async def public_appearance_media(attachment_id: str) -> FileResponse:
 @app.post("/api/auth/login")
 async def auth_login(payload: dict[str, Any], response: Response) -> dict[str, Any]:
     return login(str(payload.get("username") or ""), str(payload.get("password") or ""), response)
+
+
+@app.get("/api/auth/recovery-status")
+async def auth_recovery_status() -> dict[str, Any]:
+    with connect() as conn:
+        row = conn.execute(
+            """SELECT enabled,username_hint,locked_until FROM admin_recovery
+            WHERE enabled=1 ORDER BY created_at LIMIT 1"""
+        ).fetchone()
+    return {
+        "enabled": bool(row and row["enabled"]),
+        "username_hint": str(row["username_hint"] if row else "原始管理员账号"),
+        "locked_until": str(row["locked_until"] or "") if row else "",
+    }
+
+
+@app.post("/api/auth/recover-admin")
+async def auth_recover_admin(payload: dict[str, Any]) -> dict[str, Any]:
+    original_username = str(payload.get("original_username") or "").strip().lower()
+    original_password = str(payload.get("original_password") or "")
+    try:
+        new_username = validate_username(str(payload.get("new_username") or ""))
+        validate_new_password(str(payload.get("new_password") or ""))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    with transaction() as conn:
+        recovery = conn.execute(
+            "SELECT * FROM admin_recovery WHERE enabled=1 ORDER BY created_at LIMIT 1"
+        ).fetchone()
+        if not recovery:
+            raise HTTPException(status_code=403, detail="管理员未启用原始凭据找回")
+        if recovery["locked_until"]:
+            try:
+                locked = datetime.fromisoformat(str(recovery["locked_until"]).replace("Z", "+00:00"))
+            except ValueError:
+                locked = datetime.now(UTC)
+            if locked > datetime.now(UTC):
+                raise HTTPException(status_code=429, detail="验证失败次数过多，请稍后再试")
+        valid = (
+            token_hash(original_username) == recovery["original_username_hash"]
+            and verify_password(original_password, recovery["original_password_hash"])
+        )
+        if not valid:
+            attempts = int(recovery["failed_attempts"] or 0) + 1
+            locked_until = None
+            if attempts >= 5:
+                locked_until = (datetime.now(UTC) + timedelta(minutes=15)).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+                attempts = 0
+            conn.execute(
+                "UPDATE admin_recovery SET failed_attempts=?,locked_until=?,updated_at=? WHERE user_id=?",
+                (attempts, locked_until, utc_now(), recovery["user_id"]),
+            )
+            audit(conn, recovery["user_id"], "recovery_failed", "user", recovery["user_id"], {})
+            raise HTTPException(status_code=401, detail="原始管理员账号或密码不正确")
+        duplicate = conn.execute(
+            "SELECT id FROM users WHERE username=? COLLATE NOCASE AND id<>? AND deleted_at IS NULL",
+            (new_username, recovery["user_id"]),
+        ).fetchone()
+        if duplicate:
+            raise HTTPException(status_code=409, detail="新账号已经被使用")
+        conn.execute(
+            """UPDATE users SET username=?,password_hash=?,must_change_password=0,updated_at=?,version=version+1
+            WHERE id=?""",
+            (new_username, hash_password(str(payload["new_password"])), utc_now(), recovery["user_id"]),
+        )
+        conn.execute("DELETE FROM sessions WHERE user_id=?", (recovery["user_id"],))
+        conn.execute(
+            "UPDATE admin_recovery SET failed_attempts=0,locked_until=NULL,updated_at=? WHERE user_id=?",
+            (utc_now(), recovery["user_id"]),
+        )
+        audit(conn, recovery["user_id"], "recovery_success", "user", recovery["user_id"], {"username": new_username})
+    return {"ok": True, "message": "管理员账号与密码已重置，请使用新凭据登录"}
+
+
+@app.put("/api/admin/recovery")
+async def admin_recovery_update(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    auth = get_auth(request)
+    require_csrf(request, auth)
+    require_admin(auth)
+    current_password = str(payload.get("current_password") or "")
+    enabled = bool(payload.get("enabled", True))
+    with transaction() as conn:
+        current = conn.execute("SELECT password_hash FROM users WHERE id=?", (auth.user["id"],)).fetchone()
+        if not current or not verify_password(current_password, current["password_hash"]):
+            raise HTTPException(status_code=400, detail="当前管理员密码不正确")
+        existing = conn.execute("SELECT * FROM admin_recovery WHERE user_id=?", (auth.user["id"],)).fetchone()
+        original_username = str(payload.get("original_username") or "").strip().lower()
+        original_password = str(payload.get("original_password") or "")
+        if enabled and (not existing or original_username or original_password):
+            try:
+                original_username = validate_username(original_username)
+                validate_new_password(original_password)
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=f"原始恢复凭据：{exc}") from exc
+            now = utc_now()
+            conn.execute(
+                """INSERT INTO admin_recovery(
+                user_id,original_username_hash,original_password_hash,username_hint,enabled,failed_attempts,locked_until,created_at,updated_at
+                ) VALUES(?,?,?,?,1,0,NULL,?,?)
+                ON CONFLICT(user_id) DO UPDATE SET original_username_hash=excluded.original_username_hash,
+                original_password_hash=excluded.original_password_hash,username_hint=excluded.username_hint,
+                enabled=1,failed_attempts=0,locked_until=NULL,updated_at=excluded.updated_at""",
+                (
+                    auth.user["id"], token_hash(original_username), hash_password(original_password),
+                    f"{original_username[:1]}***（管理员自定义恢复账号）", now, now,
+                ),
+            )
+        elif existing:
+            conn.execute(
+                "UPDATE admin_recovery SET enabled=?,failed_attempts=0,locked_until=NULL,updated_at=? WHERE user_id=?",
+                (1 if enabled else 0, utc_now(), auth.user["id"]),
+            )
+        else:
+            raise HTTPException(status_code=400, detail="启用找回时需要设置原始恢复账号和密码")
+        audit(conn, auth.user["id"], "update", "admin_recovery", auth.user["id"], {"enabled": enabled})
+    return {"ok": True, "enabled": enabled}
 
 
 @app.post("/api/auth/logout")
@@ -435,12 +593,65 @@ async def auth_change_credentials(payload: dict[str, Any], request: Request) -> 
     return {"ok": True, "user": user}
 
 
+@app.post("/api/feedback")
+async def feedback_submit(
+    request: Request,
+    reporter_name: str = Form(""),
+    season: str = Form(""),
+    department: str = Form(""),
+    contact: str = Form(""),
+    description: str = Form(""),
+    consent_public_attachment: bool = Form(False),
+    files: list[UploadFile] = File(default=[]),
+) -> dict[str, Any]:
+    auth = get_auth(request)
+    require_csrf(request, auth)
+    report_id = new_id("feedback")
+    now = utc_now()
+    safe_owner = _safe_export_stem(str(auth.user.get("username") or "用户"), "用户")
+    archive_name = f"{safe_owner}_问题反馈_{report_id[-8:]}.zip"
+    with transaction() as conn:
+        conn.execute(
+            """INSERT INTO feedback_reports(
+            id,user_id,season_id,reporter_name,department,contact,description,status,delivery_method,
+            delivery_reference,last_error,archive_name,consent_public_attachment,created_at,updated_at
+            ) VALUES(?,?,?,?,?,?,?,'queued','local_queue','','',?,?,?,?)""",
+            (
+                report_id, auth.user["id"], current_season_id(conn), str(reporter_name or "")[:100],
+                str(department or "")[:100], str(contact or "")[:200], str(description or "")[:10000],
+                archive_name, 1 if consent_public_attachment else 0, now, now,
+            ),
+        )
+        audit(conn, auth.user["id"], "create", "feedback", report_id, {"season": str(season or "")[:40]})
+    saved_count = 0
+    for upload in files[:30]:
+        try:
+            attachment = await save_upload(upload, auth.user)
+            with transaction() as conn:
+                conn.execute(
+                    """INSERT INTO feedback_attachments(id,report_id,attachment_id,original_name,created_at)
+                    VALUES(?,?,?,?,?)""",
+                    (new_id("feedback_file"), report_id, attachment["id"], attachment["original_name"], utc_now()),
+                )
+            saved_count += 1
+        except Exception:
+            continue
+    result = await asyncio.to_thread(deliver_feedback, report_id)
+    result["attachment_count"] = saved_count
+    if result["status"] == "queued":
+        result["notice"] = "发送通道未配置或暂时失败，反馈压缩包已安全保留在本机待发送队列。"
+    return result
+
+
 def _reference_data(conn: sqlite3.Connection) -> dict[str, Any]:
     season = current_season(conn)
     members = [dict(row) for row in conn.execute(
         """SELECT * FROM members WHERE season_id=? AND deleted_at IS NULL
         ORDER BY active DESC,sort_order,name""", (season["id"],)
     ).fetchall()]
+    for member in members:
+        avatar_id = str(member.get("avatar_attachment_id") or "")
+        member["avatar_url"] = f"/api/attachments/{avatar_id}/content?inline=1" if avatar_id else ""
     categories = [dict(row) for row in conn.execute(
         "SELECT * FROM categories WHERE deleted_at IS NULL ORDER BY active DESC,sort_order,name"
     ).fetchall()]
@@ -477,8 +688,206 @@ async def bootstrap(request: Request) -> dict[str, Any]:
             "sync": sync_config(),
             "version": __version__,
             "mode": APP_MODE,
+            "quality_issues": list_issues(conn),
+            "open_source_references": list(OPEN_SOURCE_REFERENCES),
         })
+        preference = conn.execute("SELECT settings_json FROM user_preferences WHERE user_id=?", (auth.user["id"],)).fetchone()
+        try:
+            data["user_preferences"] = json.loads(preference["settings_json"]) if preference else {}
+        except json.JSONDecodeError:
+            data["user_preferences"] = {}
         return data
+
+
+PREFERENCE_KEYS = {
+    "theme", "shortcuts", "audio_mode", "audio_muted", "audio_volume", "audio_current_id",
+    "background_random", "login_random", "compact_mode", "login_panel_opacity", "ui_scale",
+}
+AUDIO_EXTENSIONS = {".mp3", ".wav", ".ogg", ".flac", ".m4a", ".aac", ".wma"}
+
+
+def _clean_preferences(payload: dict[str, Any]) -> dict[str, Any]:
+    clean = {key: payload[key] for key in PREFERENCE_KEYS if key in payload}
+    encoded = json.dumps(clean, ensure_ascii=False, separators=(",", ":"))
+    if len(encoded.encode("utf-8")) > 256 * 1024:
+        raise ValueError("个人设置内容过大")
+    return clean
+
+
+def _user_media_items(conn: sqlite3.Connection, user_id: str, media_type: str = "audio") -> list[dict[str, Any]]:
+    return [dict(row) for row in conn.execute(
+        """SELECT m.*,a.original_name,a.stored_name,a.mime_type,a.size_bytes
+        FROM user_media m JOIN attachments a ON a.id=m.attachment_id
+        WHERE m.user_id=? AND m.media_type=? AND a.deleted_at IS NULL
+        ORDER BY m.sort_order,m.created_at""",
+        (user_id, media_type),
+    ).fetchall()]
+
+
+@app.get("/api/user/preferences")
+async def user_preferences_get(request: Request) -> dict[str, Any]:
+    auth = get_auth(request)
+    with connect() as conn:
+        row = conn.execute("SELECT settings_json FROM user_preferences WHERE user_id=?", (auth.user["id"],)).fetchone()
+        media = _user_media_items(conn, auth.user["id"])
+    try:
+        settings = json.loads(row["settings_json"]) if row else {}
+    except json.JSONDecodeError:
+        settings = {}
+    for item in media:
+        item["url"] = f"/api/attachments/{item['attachment_id']}/content?inline=1"
+    return {"settings": settings, "audio": media}
+
+
+@app.put("/api/user/preferences")
+async def user_preferences_update(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    auth = get_auth(request)
+    require_csrf(request, auth)
+    try:
+        clean = _clean_preferences(payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    with transaction() as conn:
+        now = utc_now()
+        conn.execute(
+            """INSERT INTO user_preferences(user_id,settings_json,version,updated_at) VALUES(?,?,1,?)
+            ON CONFLICT(user_id) DO UPDATE SET settings_json=excluded.settings_json,
+            version=user_preferences.version+1,updated_at=excluded.updated_at""",
+            (auth.user["id"], json.dumps(clean, ensure_ascii=False, separators=(",", ":")), now),
+        )
+        audit(conn, auth.user["id"], "update", "user_preferences", auth.user["id"], {"keys": sorted(clean)})
+    return {"ok": True, "settings": clean}
+
+
+@app.post("/api/user/audio")
+async def user_audio_upload(request: Request, file: UploadFile = File(...), title: str = Form("")) -> dict[str, Any]:
+    auth = get_auth(request)
+    require_csrf(request, auth)
+    extension = Path(file.filename or "").suffix.lower()
+    if extension not in AUDIO_EXTENSIONS:
+        raise HTTPException(status_code=400, detail="音频支持 MP3、WAV、OGG、FLAC、M4A、AAC 或 WMA")
+    attachment = await save_upload(file, auth.user)
+    with transaction() as conn:
+        now = utc_now()
+        item = {
+            "id": new_id("audio"), "user_id": auth.user["id"], "attachment_id": attachment["id"],
+            "media_type": "audio", "title": str(title or attachment["original_name"])[:160],
+            "sort_order": int(conn.execute(
+                "SELECT COALESCE(MAX(sort_order),-1)+1 FROM user_media WHERE user_id=? AND media_type='audio'",
+                (auth.user["id"],),
+            ).fetchone()[0]),
+            "active": 1, "created_at": now, "updated_at": now,
+        }
+        columns = list(item)
+        conn.execute(
+            f"INSERT INTO user_media({','.join(columns)}) VALUES({','.join('?' for _ in columns)})",
+            tuple(item[key] for key in columns),
+        )
+    item.update({"original_name": attachment["original_name"], "mime_type": attachment["mime_type"], "url": f"/api/attachments/{attachment['id']}/content?inline=1"})
+    return {"ok": True, "item": item}
+
+
+@app.delete("/api/user/audio/{media_id}")
+async def user_audio_delete(media_id: str, request: Request) -> dict[str, bool]:
+    auth = get_auth(request)
+    require_csrf(request, auth)
+    with transaction() as conn:
+        if not conn.execute("DELETE FROM user_media WHERE id=? AND user_id=?", (media_id, auth.user["id"])).rowcount:
+            raise HTTPException(status_code=404, detail="音频不存在")
+    return {"ok": True}
+
+
+@app.get("/api/user/settings-package/export")
+async def settings_package_export(
+    request: Request, background_tasks: BackgroundTasks, include_media: bool = False
+) -> FileResponse:
+    auth = get_auth(request)
+    with connect() as conn:
+        preference = conn.execute("SELECT settings_json FROM user_preferences WHERE user_id=?", (auth.user["id"],)).fetchone()
+        media = _user_media_items(conn, auth.user["id"])
+    try:
+        settings = json.loads(preference["settings_json"]) if preference else {}
+    except json.JSONDecodeError:
+        settings = {}
+    fd, temp_name = tempfile.mkstemp(prefix="yxrt_user_settings_", suffix=".zip", dir=TMP_DIR); os.close(fd)
+    path = Path(temp_name)
+    manifest = {
+        "format": "YXRT_USER_SETTINGS_V1", "version": __version__, "exported_at": utc_now(),
+        "owner": auth.user["username"], "settings": settings,
+        "media": [{"id": item["id"], "title": item["title"], "file": f"media/{Path(item['original_name']).name}"} for item in media] if include_media else [],
+        "excluded": ["密码", "会话", "发票数据", "成员隐私数据"],
+    }
+    with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED, allowZip64=True) as archive:
+        archive.writestr("settings.json", json.dumps(manifest, ensure_ascii=False, indent=2))
+        if include_media:
+            used: set[str] = set()
+            for item in media:
+                source = attachment_path(item["stored_name"])
+                name = f"media/{Path(item['original_name']).name}"
+                if source.is_file() and name.casefold() not in used:
+                    used.add(name.casefold()); archive.write(source, arcname=name)
+    background_tasks.add_task(path.unlink, missing_ok=True)
+    filename = f"{_safe_export_stem(auth.user['username'], '用户')}软件设置.zip"
+    return FileResponse(path, media_type="application/zip", filename=filename)
+
+
+@app.post("/api/user/settings-package/import")
+async def settings_package_import(request: Request, file: UploadFile = File(...)) -> dict[str, Any]:
+    auth = get_auth(request)
+    require_csrf(request, auth)
+    fd, temp_name = tempfile.mkstemp(prefix="yxrt_user_settings_import_", suffix=".zip", dir=TMP_DIR); os.close(fd)
+    path = Path(temp_name)
+    try:
+        with path.open("wb") as target:
+            while chunk := await file.read(4 * 1024 * 1024):
+                target.write(chunk)
+        with zipfile.ZipFile(path) as archive:
+            info = archive.getinfo("settings.json")
+            if info.file_size > 512 * 1024:
+                raise HTTPException(status_code=400, detail="设置包内容异常")
+            manifest = json.loads(archive.read(info).decode("utf-8"))
+            if manifest.get("format") != "YXRT_USER_SETTINGS_V1":
+                raise HTTPException(status_code=400, detail="不是有效的软件设置包")
+            clean = _clean_preferences(manifest.get("settings") if isinstance(manifest.get("settings"), dict) else {})
+            with transaction() as conn:
+                conn.execute(
+                    """INSERT INTO user_preferences(user_id,settings_json,version,updated_at) VALUES(?,?,1,?)
+                    ON CONFLICT(user_id) DO UPDATE SET settings_json=excluded.settings_json,
+                    version=user_preferences.version+1,updated_at=excluded.updated_at""",
+                    (auth.user["id"], json.dumps(clean, ensure_ascii=False, separators=(",", ":")), utc_now()),
+                )
+            imported_media = 0
+            media_meta = manifest.get("media") if isinstance(manifest.get("media"), list) else []
+            for item in media_meta[:100]:
+                member = str(item.get("file") or "") if isinstance(item, dict) else ""
+                if not member.startswith("media/") or Path(member).suffix.lower() not in AUDIO_EXTENSIONS:
+                    continue
+                try:
+                    entry = archive.getinfo(member)
+                    if entry.file_size > 500 * 1024 * 1024:
+                        continue
+                    fd_media, media_name = tempfile.mkstemp(prefix="yxrt_settings_media_", suffix=Path(member).suffix, dir=TMP_DIR); os.close(fd_media)
+                    media_path = Path(media_name)
+                    try:
+                        with archive.open(entry) as source, media_path.open("wb") as target:
+                            shutil.copyfileobj(source, target, length=4 * 1024 * 1024)
+                        attachment = save_file(media_path, Path(member).name, auth.user)
+                        with transaction() as conn:
+                            conn.execute(
+                                """INSERT INTO user_media(id,user_id,attachment_id,media_type,title,sort_order,active,created_at,updated_at)
+                                VALUES(?,?,?,'audio',?,?,1,?,?)""",
+                                (new_id("audio"), auth.user["id"], attachment["id"], str(item.get("title") or Path(member).name)[:160], imported_media, utc_now(), utc_now()),
+                            )
+                        imported_media += 1
+                    finally:
+                        media_path.unlink(missing_ok=True)
+                except (KeyError, OSError, sqlite3.Error):
+                    continue
+        return {"ok": True, "settings": clean, "imported_media": imported_media}
+    except (zipfile.BadZipFile, json.JSONDecodeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=f"设置包损坏或格式不正确：{exc}") from exc
+    finally:
+        path.unlink(missing_ok=True)
 
 
 @app.get("/api/dashboard")
@@ -486,6 +895,29 @@ async def dashboard_endpoint(request: Request) -> dict[str, Any]:
     get_auth(request)
     with connect() as conn:
         return dashboard(conn)
+
+
+@app.get("/api/quality/issues")
+async def quality_issues(request: Request, status: str = "open") -> dict[str, Any]:
+    get_auth(request)
+    if status not in {"open", "resolved"}:
+        raise HTTPException(status_code=400, detail="问题状态不正确")
+    with connect() as conn:
+        items = list_issues(conn, status=status)
+    return {"items": items, "count": len(items)}
+
+
+@app.post("/api/quality/issues/{issue_id}/resolve")
+async def quality_issue_resolve(issue_id: str, request: Request) -> dict[str, bool]:
+    auth = get_auth(request)
+    require_csrf(request, auth)
+    require_write(auth)
+    with transaction() as conn:
+        if not resolve_issue(conn, issue_id):
+            raise HTTPException(status_code=404, detail="问题不存在或已处理")
+        audit(conn, auth.user["id"], "resolve", "quality_issue", issue_id, {})
+    await hub.notify("quality_changed")
+    return {"ok": True}
 
 
 def _season_items(conn: sqlite3.Connection) -> list[dict[str, Any]]:
@@ -832,6 +1264,13 @@ async def invoice_create(payload: dict[str, Any], request: Request) -> dict[str,
     require_csrf(request, auth)
     require_write(auth)
     item = save_invoice(payload, auth.user)
+    if str(payload.get("ocr_status") or "") == "recognized":
+        with transaction() as conn:
+            sync_ocr_issues(conn, item["id"], {
+                "ocr_confidence": payload.get("ocr_confidence", 0),
+                "uncertain_fields": payload.get("uncertain_fields") or [],
+                "field_confidences": payload.get("field_confidences") or {},
+            }, user_id=auth.user["id"])
     await hub.notify()
     return item
 
@@ -842,6 +1281,12 @@ async def invoice_update(invoice_id: str, payload: dict[str, Any], request: Requ
     require_csrf(request, auth)
     require_write(auth)
     item = save_invoice(payload, auth.user, invoice_id)
+    with transaction() as conn:
+        conn.execute(
+            """UPDATE invoice_quality_issues SET status='resolved',updated_at=?
+            WHERE invoice_id=? AND status='open' AND issue_type IN ('low_confidence','ocr_failed','import_failed')""",
+            (utc_now(), invoice_id),
+        )
     await hub.notify()
     return item
 
@@ -1112,6 +1557,35 @@ async def members_update(member_id: str, payload: dict[str, Any], request: Reque
     return item
 
 
+@app.post("/api/members/{member_id}/avatar")
+async def member_avatar_upload(member_id: str, request: Request, file: UploadFile = File(...)) -> dict[str, Any]:
+    auth = get_auth(request)
+    require_csrf(request, auth)
+    require_write(auth)
+    if auth.user["role"] != "admin" and auth.user.get("member_id") != member_id:
+        raise HTTPException(status_code=403, detail="只能修改自己的头像")
+    extension = Path(file.filename or "").suffix.lower()
+    if extension not in APPEARANCE_IMAGE_EXTENSIONS or str(file.content_type or "").startswith("video/"):
+        raise HTTPException(status_code=400, detail="头像仅支持 JPG、PNG、GIF 或 WEBP 图片")
+    with connect() as conn:
+        exists = conn.execute(
+            "SELECT 1 FROM members WHERE id=? AND season_id=? AND deleted_at IS NULL",
+            (member_id, current_season_id(conn)),
+        ).fetchone()
+    if not exists:
+        raise HTTPException(status_code=404, detail="成员不存在")
+    attachment = await save_upload(file, auth.user)
+    with transaction() as conn:
+        now = utc_now()
+        conn.execute(
+            "UPDATE members SET avatar_attachment_id=?,updated_at=?,version=version+1,device_id=? WHERE id=?",
+            (attachment["id"], now, get_device_id(conn), member_id),
+        )
+        audit(conn, auth.user["id"], "update_avatar", "member", member_id, {"name": attachment["original_name"]})
+    await hub.notify("member_changed")
+    return {"ok": True, "attachment_id": attachment["id"], "avatar_url": f"/api/attachments/{attachment['id']}/content?inline=1"}
+
+
 @app.delete("/api/members/{member_id}")
 async def members_archive(member_id: str, request: Request) -> dict[str, bool]:
     auth = get_auth(request)
@@ -1214,11 +1688,21 @@ async def attachment_upload(request: Request, file: UploadFile = File(...)) -> d
 
 @app.get("/api/attachments/{attachment_id}/content")
 async def attachment_content(attachment_id: str, request: Request, inline: bool = False) -> FileResponse:
-    get_auth(request)
+    auth = get_auth(request)
     with connect() as conn:
         row = conn.execute("SELECT * FROM attachments WHERE id=? AND deleted_at IS NULL", (attachment_id,)).fetchone()
         if row and row["season_id"] != current_season_id(conn) and attachment_id not in _configured_public_media_ids(conn):
-            row = None
+            owns_media = conn.execute(
+                "SELECT 1 FROM user_media WHERE attachment_id=? AND user_id=?",
+                (attachment_id, auth.user["id"]),
+            ).fetchone()
+            avatar = conn.execute(
+                """SELECT 1 FROM members m LEFT JOIN users u ON u.member_id=m.id
+                WHERE m.avatar_attachment_id=? AND (u.id=? OR ?='admin')""",
+                (attachment_id, auth.user["id"], auth.user["role"]),
+            ).fetchone()
+            if not owns_media and not avatar:
+                row = None
     if not row:
         raise HTTPException(status_code=404, detail="附件不存在")
     path = attachment_path(row["stored_name"])
@@ -1232,6 +1716,101 @@ async def attachment_content(attachment_id: str, request: Request, inline: bool 
             headers={"Content-Disposition": f"inline; filename*=UTF-8''{safe_name}"},
         )
     return FileResponse(path, media_type=row["mime_type"], filename=row["original_name"])
+
+
+@app.post("/api/attachments/{attachment_id}/open")
+async def attachment_open_local(attachment_id: str, request: Request) -> dict[str, Any]:
+    auth = get_auth(request)
+    require_csrf(request, auth)
+    client_host = request.client.host if request.client else ""
+    if APP_MODE != "desktop" or client_host not in {"127.0.0.1", "::1", "localhost"}:
+        raise HTTPException(status_code=403, detail="仅桌面本机可以直接打开源文件")
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT * FROM attachments WHERE id=? AND season_id=? AND deleted_at IS NULL",
+            (attachment_id, current_season_id(conn)),
+        ).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="附件不存在")
+    path = attachment_path(row["stored_name"])
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="附件文件尚未同步到本机")
+    try:
+        await asyncio.to_thread(open_local_file, path)
+    except OSError as exc:
+        raise HTTPException(status_code=400, detail=f"无法使用电脑默认程序打开：{exc}") from exc
+    return {"ok": True, "name": row["original_name"]}
+
+
+@app.post("/api/invoices/{invoice_id}/supporting-attachments")
+async def supporting_attachment_upload(
+    invoice_id: str,
+    request: Request,
+    file: UploadFile = File(...),
+    attachment_kind: str = Form("other"),
+    label: str = Form(""),
+) -> dict[str, Any]:
+    auth = get_auth(request)
+    require_csrf(request, auth)
+    require_write(auth)
+    if attachment_kind not in {"shopping", "signature", "other"}:
+        raise HTTPException(status_code=400, detail="证明附件类型不正确")
+    with connect() as conn:
+        invoice = conn.execute(
+            "SELECT id FROM invoices WHERE id=? AND season_id=? AND deleted_at IS NULL",
+            (invoice_id, current_season_id(conn)),
+        ).fetchone()
+    if not invoice:
+        raise HTTPException(status_code=404, detail="发票不存在")
+    attachment = await save_upload(file, auth.user)
+    with transaction() as conn:
+        now = utc_now()
+        relation_id = new_id("support")
+        existing = conn.execute(
+            "SELECT id FROM invoice_supporting_attachments WHERE invoice_id=? AND attachment_id=?",
+            (invoice_id, attachment["id"]),
+        ).fetchone()
+        if existing:
+            relation_id = str(existing["id"])
+            conn.execute(
+                "UPDATE invoice_supporting_attachments SET attachment_kind=?,label=?,updated_at=? WHERE id=?",
+                (attachment_kind, str(label or "")[:160], now, relation_id),
+            )
+        else:
+            sort_order = int(conn.execute(
+                "SELECT COALESCE(MAX(sort_order),-1)+1 FROM invoice_supporting_attachments WHERE invoice_id=?",
+                (invoice_id,),
+            ).fetchone()[0])
+            conn.execute(
+                """INSERT INTO invoice_supporting_attachments(
+                id,season_id,invoice_id,attachment_id,attachment_kind,label,sort_order,created_by,created_at,updated_at
+                ) VALUES(?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    relation_id, current_season_id(conn), invoice_id, attachment["id"], attachment_kind,
+                    str(label or "")[:160], sort_order, auth.user["id"], now, now,
+                ),
+            )
+        audit(conn, auth.user["id"], "attach_supporting_file", "invoice", invoice_id, {"name": attachment["original_name"]})
+    await hub.notify("invoice_changed")
+    return {"ok": True, "relation_id": relation_id, "attachment": attachment}
+
+
+@app.delete("/api/invoices/{invoice_id}/supporting-attachments/{relation_id}")
+async def supporting_attachment_delete(invoice_id: str, relation_id: str, request: Request) -> dict[str, bool]:
+    auth = get_auth(request)
+    require_csrf(request, auth)
+    require_write(auth)
+    with transaction() as conn:
+        row = conn.execute(
+            """SELECT r.id FROM invoice_supporting_attachments r JOIN invoices i ON i.id=r.invoice_id
+            WHERE r.id=? AND r.invoice_id=? AND i.season_id=? AND i.deleted_at IS NULL""",
+            (relation_id, invoice_id, current_season_id(conn)),
+        ).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="证明附件不存在")
+        conn.execute("DELETE FROM invoice_supporting_attachments WHERE id=?", (relation_id,))
+        audit(conn, auth.user["id"], "remove_supporting_file", "invoice", invoice_id, {"relation_id": relation_id})
+    return {"ok": True}
 
 
 def _create_import_drafts(
@@ -1292,6 +1871,39 @@ def _create_import_drafts(
     return drafts
 
 
+def _start_import_jobs(
+    attachments: list[dict[str, Any]], drafts: list[dict[str, Any]], user: dict[str, Any]
+) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
+    jobs: list[dict[str, Any]] = []
+    failures: list[dict[str, str]] = []
+    for attachment, draft in zip(attachments, drafts):
+        try:
+            jobs.append({
+                "attachment_id": attachment["id"], "invoice_id": draft["id"],
+                "job_id": create_ocr_job(attachment["id"], user["id"], draft["id"]),
+            })
+        except Exception as exc:
+            message = f"识别队列创建失败：{str(exc)[:500]}"
+            failures.append({"file_name": attachment.get("original_name", ""), "reason": message})
+            with transaction() as conn:
+                record_issue(
+                    conn, "import_failed", message, invoice_id=draft["id"], severity="error",
+                    details={"file_name": attachment.get("original_name", "")}, user_id=user["id"],
+                )
+    return jobs, failures
+
+
+def _record_import_skips(skipped: list[dict[str, str]], user_id: str) -> None:
+    if not skipped:
+        return
+    with transaction() as conn:
+        for item in skipped[:500]:
+            record_issue(
+                conn, "import_failed", f"{item.get('file_name') or '文件'}：{item.get('reason') or '导入失败'}",
+                severity="error", details=item, user_id=user_id,
+            )
+
+
 @app.post("/api/import/zip")
 async def import_zip(
     request: Request,
@@ -1325,15 +1937,15 @@ async def import_zip(
             burden_type=burden_type, funding_source_id=funding_source_id,
             split_member_ids=[str(value) for value in selected_ids], note=note,
         )
-        jobs = [
-            {"attachment_id": attachment["id"], "invoice_id": draft["id"],
-             "job_id": create_ocr_job(attachment["id"], auth.user["id"], draft["id"])}
-            for attachment, draft in zip(attachments, drafts)
-        ]
+        jobs, job_failures = _start_import_jobs(attachments, drafts, auth.user)
+        skipped.extend(job_failures)
+        _record_import_skips(skipped, auth.user["id"])
         await hub.notify()
         return {"attachments": attachments, "drafts": drafts, "jobs": jobs, "skipped": skipped, "count": len(attachments)}
     except zipfile.BadZipFile as exc:
         raise HTTPException(status_code=400, detail="ZIP 压缩包损坏或格式不正确") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     finally:
         Path(temp_name).unlink(missing_ok=True)
 
@@ -1376,11 +1988,9 @@ async def import_files(
         burden_type=burden_type, funding_source_id=funding_source_id,
         split_member_ids=[str(value) for value in selected_ids], note=note,
     )
-    jobs = [
-        {"attachment_id": attachment["id"], "invoice_id": draft["id"],
-         "job_id": create_ocr_job(attachment["id"], auth.user["id"], draft["id"])}
-        for attachment, draft in zip(attachments, drafts)
-    ]
+    jobs, job_failures = _start_import_jobs(attachments, drafts, auth.user)
+    skipped.extend(job_failures)
+    _record_import_skips(skipped, auth.user["id"])
     await hub.notify()
     return {"attachments": attachments, "drafts": drafts, "jobs": jobs, "skipped": skipped, "count": len(attachments)}
 
@@ -1497,6 +2107,7 @@ async def settings_update(payload: dict[str, Any], request: Request) -> dict[str
     allowed = {
         "team_name", "background_image", "background_media_id", "background_overlay", "accent_color",
         "login_slideshow_enabled", "login_slides", "login_transition", "loading_cars",
+        "login_panel_opacity", "login_random_enabled", "global_background_random",
     }
     with transaction() as conn:
         create_snapshot(conn, auth.user["id"], "界面设置修改前", "全队显示设置")
@@ -1514,8 +2125,13 @@ async def settings_update(payload: dict[str, Any], request: Request) -> dict[str
                         raise HTTPException(status_code=400, detail="主题颜色格式不正确")
                 elif key == "team_name":
                     value = str(payload[key]).strip()[:80] or "燕翔车队 Racing Team"
-                elif key == "login_slideshow_enabled":
+                elif key in {"login_slideshow_enabled", "login_random_enabled", "global_background_random"}:
                     value = "1" if bool(payload[key]) else "0"
+                elif key == "login_panel_opacity":
+                    try:
+                        value = str(max(0.35, min(1.0, float(payload[key]))))
+                    except (TypeError, ValueError):
+                        raise HTTPException(status_code=400, detail="登录面板透明度不正确") from None
                 elif key == "login_transition":
                     value = str(payload[key])
                     if value not in {"fade", "slide"}:
@@ -1972,30 +2588,129 @@ def _invoice_source_pdf(invoice: dict[str, Any]) -> tuple[bytes, str]:
     raise ValueError(f"{extension or '该格式'} 暂不支持无损转为 PDF")
 
 
-def _create_pdf_export(invoices: list[dict[str, Any]], mode: str) -> tuple[Path, int, int, float]:
+def _supporting_attachment_rows(invoice_id: str) -> list[dict[str, Any]]:
+    with connect() as conn:
+        return [dict(row) for row in conn.execute(
+            """SELECT r.attachment_kind,r.label,a.id AS attachment_id,a.original_name,a.stored_name,a.mime_type
+            FROM invoice_supporting_attachments r JOIN attachments a ON a.id=r.attachment_id
+            WHERE r.invoice_id=? AND a.deleted_at IS NULL ORDER BY r.sort_order,r.created_at""",
+            (invoice_id,),
+        ).fetchall()]
+
+
+def _supporting_pdf_bytes(item: dict[str, Any], conversion_dir: Path) -> bytes | None:
+    path = attachment_path(item["stored_name"])
+    if not path.is_file():
+        raise FileNotFoundError("证明附件在本机不存在")
+    extension = path.suffix.lower()
+    if extension == ".pdf":
+        return path.read_bytes()
+    if extension in {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp"}:
+        return _lossless_image_pdf(path)
+    if extension in OFFICE_WORD | OFFICE_EXCEL | OFFICE_POWERPOINT:
+        converted = convert_office_to_pdf(path, conversion_dir)
+        return converted.read_bytes() if converted else None
+    if extension in TEXT_EXTENSIONS:
+        converted = text_to_pdf(path, conversion_dir)
+        return converted.read_bytes() if converted else None
+    return None
+
+
+def _record_export_problem(
+    invoice_id: str, issue_type: str, message: str, *, user_id: str | None = None, details: dict[str, Any] | None = None
+) -> None:
+    with transaction() as conn:
+        record_issue(
+            conn, issue_type, message, invoice_id=invoice_id, severity="error", details=details, user_id=user_id,
+        )
+
+
+def _clear_previous_export_problems(invoice_id: str) -> None:
+    with transaction() as conn:
+        conn.execute(
+            """UPDATE invoice_quality_issues SET status='resolved',updated_at=?
+            WHERE invoice_id=? AND status='open' AND issue_type IN ('export_failed','conversion_failed','attachment_missing')""",
+            (utc_now(), invoice_id),
+        )
+
+
+def _append_pdf(writer: Any, payload: bytes) -> None:
+    from pypdf import PdfReader
+    writer.append(PdfReader(io.BytesIO(payload)))
+
+
+def _create_pdf_export(
+    invoices: list[dict[str, Any]], mode: str, include_supporting: bool = False, user_id: str | None = None
+) -> tuple[Path, int, int, float]:
     converted: list[tuple[dict[str, Any], bytes, str]] = []
     skipped: list[str] = []
     for index, invoice in enumerate(invoices, 1):
+        _clear_previous_export_problems(str(invoice["id"]))
         try:
             pdf_bytes, method = _invoice_source_pdf(invoice)
             converted.append((invoice, pdf_bytes, method))
         except ValueError as exc:
-            skipped.append(f"{index}. {invoice.get('invoice_no') or invoice.get('vendor') or invoice.get('id')}：{exc}")
+            message = f"{index}. {invoice.get('invoice_no') or invoice.get('vendor') or invoice.get('id')}：{exc}"
+            skipped.append(message)
+            _record_export_problem(str(invoice["id"]), "export_failed", str(exc), user_id=user_id)
     if not converted:
         raise ValueError("所选发票没有可导出的 PDF 或图片源文件")
-    suffix = ".pdf" if mode == "merged" else ".zip"
+    package_as_zip = mode == "separate" or include_supporting
+    suffix = ".zip" if package_as_zip else ".pdf"
     fd, name = tempfile.mkstemp(prefix="yxrt_pdf_export_", suffix=suffix, dir=TMP_DIR)
     os.close(fd)
     output_path = Path(name)
+    conversion_root = Path(tempfile.mkdtemp(prefix="yxrt_attachment_convert_", dir=TMP_DIR))
+    source_extras: list[tuple[str, Path]] = []
+    manifest: list[str] = []
     try:
-        if mode == "merged":
-            from pypdf import PdfReader, PdfWriter
+        from pypdf import PdfWriter
+
+        def combined_invoice_pdf(invoice: dict[str, Any], primary: bytes) -> bytes:
             writer = PdfWriter()
-            for invoice, pdf_bytes, _ in converted:
+            _append_pdf(writer, primary)
+            if include_supporting:
+                for supporting in _supporting_attachment_rows(str(invoice["id"])):
+                    identity = supporting.get("original_name") or supporting.get("attachment_id")
+                    path = attachment_path(supporting["stored_name"])
+                    try:
+                        payload = _supporting_pdf_bytes(supporting, conversion_root)
+                        if payload:
+                            _append_pdf(writer, payload)
+                            manifest.append(f"已追加：{identity}")
+                        else:
+                            source_extras.append((f"无法合并的源附件/{invoice['id']}/{Path(str(identity)).name}", path))
+                            message = f"附件“{identity}”无法转换为 PDF，已保留原文件"
+                            skipped.append(message); manifest.append(message)
+                            _record_export_problem(str(invoice["id"]), "conversion_failed", message, user_id=user_id)
+                    except Exception as exc:
+                        if path.is_file():
+                            source_extras.append((f"无法合并的源附件/{invoice['id']}/{Path(str(identity)).name}", path))
+                        message = f"附件“{identity}”转换失败：{str(exc)[:300]}"
+                        skipped.append(message); manifest.append(message)
+                        _record_export_problem(str(invoice["id"]), "conversion_failed", message, user_id=user_id)
+            output = io.BytesIO(); writer.write(output); return output.getvalue()
+
+        combined: list[tuple[dict[str, Any], bytes]] = []
+        for invoice, primary, _ in converted:
+            try:
+                combined.append((invoice, combined_invoice_pdf(invoice, primary)))
+            except Exception as exc:
+                message = f"{invoice.get('invoice_no') or invoice.get('vendor') or invoice.get('id')}：合并失败（{exc}）"
+                skipped.append(message)
+                _record_export_problem(str(invoice["id"]), "export_failed", message, user_id=user_id)
+
+        if not combined:
+            raise ValueError("没有可以导出的 PDF 页面")
+        if not package_as_zip:
+            writer = PdfWriter()
+            for invoice, pdf_bytes in combined:
                 try:
-                    writer.append(PdfReader(io.BytesIO(pdf_bytes)))
+                    _append_pdf(writer, pdf_bytes)
                 except Exception as exc:
-                    skipped.append(f"{invoice.get('invoice_no') or invoice.get('vendor') or invoice.get('id')}：合并失败（{exc}）")
+                    message = f"{invoice.get('invoice_no') or invoice.get('id')}：合并失败（{exc}）"
+                    skipped.append(message)
+                    _record_export_problem(str(invoice["id"]), "export_failed", message, user_id=user_id)
             if not writer.pages:
                 raise ValueError("没有可以合并的 PDF 页面")
             with output_path.open("wb") as stream:
@@ -2003,22 +2718,40 @@ def _create_pdf_export(invoices: list[dict[str, Any]], mode: str) -> tuple[Path,
         else:
             used_names: set[str] = set()
             with zipfile.ZipFile(output_path, "w", allowZip64=True) as archive:
-                for index, (invoice, pdf_bytes, _) in enumerate(converted, 1):
-                    identity = invoice.get("invoice_no") or invoice.get("vendor") or f"发票_{index}"
-                    base = f"{index:03d}_{_safe_export_stem(str(identity), f'发票_{index}')}.pdf"
-                    candidate = base
-                    serial = 2
-                    while candidate.lower() in used_names:
-                        candidate = f"{Path(base).stem}_{serial}.pdf"; serial += 1
-                    used_names.add(candidate.lower())
-                    archive.writestr(candidate, pdf_bytes, compress_type=zipfile.ZIP_STORED)
-                if skipped:
-                    archive.writestr("未导出说明.txt", "\ufeff" + "\n".join(skipped), compress_type=zipfile.ZIP_DEFLATED)
-        total = round(sum(float(item.get("total_amount") or 0) for item, _, _ in converted), 2)
-        return output_path, len(converted), len(skipped), total
+                if mode == "merged":
+                    merged = PdfWriter()
+                    for invoice, pdf_bytes in combined:
+                        try:
+                            _append_pdf(merged, pdf_bytes)
+                        except Exception as exc:
+                            message = f"{invoice.get('invoice_no') or invoice.get('id')}：合并失败（{exc}）"
+                            skipped.append(message)
+                            _record_export_problem(str(invoice["id"]), "export_failed", message, user_id=user_id)
+                    stream = io.BytesIO(); merged.write(stream)
+                    archive.writestr("发票及附件_合并.pdf", stream.getvalue(), compress_type=zipfile.ZIP_STORED)
+                else:
+                    for index, (invoice, pdf_bytes) in enumerate(combined, 1):
+                        identity = invoice.get("invoice_no") or invoice.get("vendor") or f"发票_{index}"
+                        base = f"{index:03d}_{_safe_export_stem(str(identity), f'发票_{index}')}.pdf"
+                        candidate = base; serial = 2
+                        while candidate.lower() in used_names:
+                            candidate = f"{Path(base).stem}_{serial}.pdf"; serial += 1
+                        used_names.add(candidate.lower())
+                        archive.writestr(candidate, pdf_bytes, compress_type=zipfile.ZIP_STORED)
+                for archive_name, path in source_extras:
+                    if path.is_file():
+                        archive.write(path, arcname=archive_name)
+                if skipped or manifest:
+                    archive.writestr(
+                        "导出说明.txt", "\ufeff" + "\n".join(manifest + skipped), compress_type=zipfile.ZIP_DEFLATED,
+                    )
+        total = round(sum(float(item.get("total_amount") or 0) for item, _ in combined), 2)
+        return output_path, len(combined), len(skipped), total
     except Exception:
         output_path.unlink(missing_ok=True)
         raise
+    finally:
+        shutil.rmtree(conversion_root, ignore_errors=True)
 
 
 @app.post("/api/export/pdf")
@@ -2026,6 +2759,7 @@ async def export_pdf(payload: dict[str, Any], request: Request, background_tasks
     auth = get_auth(request)
     require_csrf(request, auth)
     mode = str(payload.get("mode") or "separate")
+    include_supporting = bool(payload.get("include_supporting"))
     if mode not in {"merged", "separate"}:
         raise HTTPException(status_code=400, detail="PDF 导出方式不正确")
     with connect() as conn:
@@ -2033,15 +2767,21 @@ async def export_pdf(payload: dict[str, Any], request: Request, background_tasks
     if not invoices:
         raise HTTPException(status_code=400, detail="当前没有可导出的发票")
     try:
-        path, count, skipped, total = await asyncio.to_thread(_create_pdf_export, invoices, mode)
+        path, count, skipped, total = await asyncio.to_thread(
+            _create_pdf_export, invoices, mode, include_supporting, auth.user["id"]
+        )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     background_tasks.add_task(path.unlink, missing_ok=True)
     date = utc_now()[:10]
-    filename = f"燕翔车队发票_合并_{date}.pdf" if mode == "merged" else f"燕翔车队发票_逐张_{date}.zip"
+    packaged = mode == "separate" or include_supporting
+    if include_supporting:
+        filename = f"燕翔车队发票及证明_{'合并' if mode == 'merged' else '逐张'}_{date}.zip"
+    else:
+        filename = f"燕翔车队发票_合并_{date}.pdf" if mode == "merged" else f"燕翔车队发票_逐张_{date}.zip"
     return FileResponse(
         path,
-        media_type="application/pdf" if mode == "merged" else "application/zip",
+        media_type="application/zip" if packaged else "application/pdf",
         filename=filename,
         headers={
             "X-Export-Count": str(count),

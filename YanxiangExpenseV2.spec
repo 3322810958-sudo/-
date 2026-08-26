@@ -20,6 +20,8 @@ hiddenimports = [
     "uvicorn.protocols.http.auto",
     "uvicorn.protocols.websockets.auto",
     "uvicorn.lifespan.on",
+    "pythoncom",
+    "win32com.client",
 ]
 
 for package in ("paddle", "paddleocr", "paddlex", "webview"):
@@ -64,7 +66,7 @@ exe = EXE(
     bootloader_ignore_signals=False,
     strip=False,
     upx=False,
-    console=True,
+    console=False,
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,

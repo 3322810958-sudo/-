@@ -14,6 +14,7 @@ from .business import PRODUCT_TYPES, to_cents
 from .classification import classify_invoice, detect_product_type as smart_detect_product_type
 from .config import MODEL_DIR, OCR_CPU_THREADS, OCR_DETECTION_MAX_SIDE, OCR_WORKERS
 from .database import audit, connect, current_season_id, enqueue_sync_event, get_device_id, new_id, transaction, utc_now
+from .quality import record_issue, sync_ocr_issues
 
 
 OCR_EXECUTOR = ThreadPoolExecutor(max_workers=OCR_WORKERS, thread_name_prefix="yxrt-ocr")
@@ -100,6 +101,18 @@ def parse_invoice_text(text: str, confidence: float = 0.0) -> dict[str, Any]:
         confidence_value = max(confidence_value, 0.78)
     elif total_amount or invoice_date:
         confidence_value = max(confidence_value, 0.55)
+    bounded_confidence = round(min(1.0, confidence_value), 4)
+    field_confidences = {
+        "invoice_no": round(max(bounded_confidence, 0.86) if invoice_no else 0.0, 4),
+        "vendor": round(max(bounded_confidence, 0.80) if vendor else 0.0, 4),
+        "invoice_date": round(max(bounded_confidence, 0.90) if invoice_date else 0.0, 4),
+        "total_amount": round(max(bounded_confidence, 0.90) if total_amount > 0 else 0.0, 4),
+        "tax_amount": round(max(bounded_confidence, 0.72) if tax_raw else 0.0, 4),
+    }
+    uncertain_fields = [
+        key for key in ("invoice_no", "vendor", "invoice_date", "total_amount")
+        if field_confidences[key] < 0.75
+    ]
     return {
         "invoice_no": invoice_no,
         "vendor": vendor,
@@ -108,8 +121,10 @@ def parse_invoice_text(text: str, confidence: float = 0.0) -> dict[str, Any]:
         "tax_amount": _money_value(tax_raw),
         "product_type": detect_product_type(single_line),
         "ocr_text": raw[:30000],
-        "ocr_confidence": round(min(1.0, confidence_value), 4),
+        "ocr_confidence": bounded_confidence,
         "ocr_status": "recognized" if raw.strip() else "no_text",
+        "field_confidences": field_confidences,
+        "uncertain_fields": uncertain_fields,
     }
 
 
@@ -254,6 +269,7 @@ def warmup_ocr() -> None:
 
 
 def _run_job(job_id: str) -> None:
+    job = None
     try:
         with transaction() as conn:
             job = conn.execute("SELECT * FROM ocr_jobs WHERE id=?", (job_id,)).fetchone()
@@ -330,12 +346,18 @@ def _run_job(job_id: str) -> None:
                         "category": result.get("category_name", ""),
                         "classification_reason": result.get("classification_reason", ""),
                     })
+                    sync_ocr_issues(conn, invoice["id"], result, user_id=job["created_by"])
     except Exception as exc:
         with transaction() as conn:
             conn.execute(
                 "UPDATE ocr_jobs SET status='failed',error=?,updated_at=? WHERE id=?",
                 (str(exc)[:1000], utc_now(), job_id),
             )
+            if job and job["invoice_id"]:
+                record_issue(
+                    conn, "ocr_failed", f"离线识别失败：{str(exc)[:500]}",
+                    invoice_id=job["invoice_id"], severity="error", user_id=job["created_by"],
+                )
 
 
 def get_ocr_job(job_id: str) -> dict[str, Any] | None:
