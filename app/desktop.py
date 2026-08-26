@@ -78,6 +78,18 @@ def available_port(host: str, preferred: int) -> int:
         return int(listener.getsockname()[1])
 
 
+def desktop_server_config(host: str, port: int) -> uvicorn.Config:
+    """Build a GUI-safe server config without terminal-dependent formatters."""
+    return uvicorn.Config(
+        "app.main:app",
+        host=host,
+        port=port,
+        log_level="warning",
+        access_log=False,
+        log_config=None,
+    )
+
+
 def main() -> None:
     multiprocessing.freeze_support()
     runtime_home = RUNTIME_HOME
@@ -95,7 +107,7 @@ def main() -> None:
 
     server: uvicorn.Server | None = None
     if not app_ready(host, port):
-        config = uvicorn.Config("app.main:app", host=host, port=port, log_level="warning", access_log=False)
+        config = desktop_server_config(host, port)
         server = uvicorn.Server(config)
         thread = threading.Thread(target=server.run, name="yxrt-web", daemon=True)
         thread.start()

@@ -11,7 +11,7 @@ const state = {
   shortcuts: {}, shortcutDraft: {},
   loadingTimer: null, loadingProgress: 0, loadingToken: 0, updateRelease: null,
   currentInvoicePreview: null, batchPreviewFiles: [], attachmentViewerZoom: 1,
-  version: "2.3.1", updateJobId: "", qualityIssues: [], openSourceReferences: [],
+  version: "2.3.2", updateJobId: "", qualityIssues: [], openSourceReferences: [],
   supportingAttachments: [], batchReviewIds: [], userPreferences: {}, personalAudio: [], audioIndex: -1,
   draftHistory: [], draftHistoryIndex: -1, draftHistoryTimer: null, activeDraftForm: null,
   lastOcrResult: null,
@@ -495,7 +495,7 @@ function applyTheme() {
     if (video.getAttribute("src") !== mediaUrl) video.src = mediaUrl;
     video.classList.add("active"); video.play().catch(() => {});
   } else { video.pause(); video.removeAttribute("src"); video.load(); video.classList.remove("active"); }
-  document.title = `${settings.team_name || "燕翔车队"} · 经费管理系统 V${state.version || "2.3.1"}`;
+  document.title = `${settings.team_name || "燕翔车队"} · 经费管理系统 V${state.version || "2.3.2"}`;
 }
 
 function applyAccess() {
@@ -548,7 +548,7 @@ async function loadBootstrap() {
   state.settings = data.settings || {};
   state.dashboard = data.dashboard;
   state.sync = data.sync || {};
-  state.version = data.version || "2.3.1";
+  state.version = data.version || "2.3.2";
   state.qualityIssues = data.quality_issues || [];
   state.openSourceReferences = data.open_source_references || [];
   state.userPreferences = data.user_preferences || {};

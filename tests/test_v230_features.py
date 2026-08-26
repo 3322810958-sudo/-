@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import io
+import sys
 import zipfile
 
 from fastapi.testclient import TestClient
 from pypdf import PdfWriter
 
 from app.main import app
+from app.desktop import desktop_server_config
 from app.updater import UPDATE_REPOSITORY, _safe_asset_url
+from launcher import ensure_runtime_streams
 from tests.test_api import login
 
 
@@ -104,5 +107,17 @@ def test_feedback_queue_and_avatar_permissions():
 def test_update_repository_matches_current_github_location():
     assert UPDATE_REPOSITORY == "3322810958-sudo/YXRT_Money_APP"
     assert _safe_asset_url(
-        "https://github.com/3322810958-sudo/YXRT_Money_APP/releases/download/v2.3.1/update.zip"
+        "https://github.com/3322810958-sudo/YXRT_Money_APP/releases/download/v2.3.2/update.zip"
     )
+
+
+def test_windowed_launcher_supplies_streams_and_disables_uvicorn_terminal_logging(monkeypatch):
+    with monkeypatch.context() as context:
+        context.setattr(sys, "stdout", None)
+        context.setattr(sys, "stderr", None)
+        ensure_runtime_streams()
+        assert sys.stdout is not None and isinstance(sys.stdout.isatty(), bool)
+        assert sys.stderr is not None and isinstance(sys.stderr.isatty(), bool)
+    config = desktop_server_config("127.0.0.1", 8765)
+    assert config.log_config is None
+    assert config.access_log is False
