@@ -647,8 +647,12 @@ html[data-theme="light"] .race-stage > img { filter: drop-shadow(0 7px 9px rgba(
 }
 
 /* V2.3.0 quality center, attachments, personal media and form history */
-:root { --login-panel-opacity: .78; }
+:root { --login-panel-opacity: .78; --chrome-opacity: .78; }
 .login-card { background: color-mix(in srgb, var(--modal-bg) calc(var(--login-panel-opacity) * 100%), transparent) !important; backdrop-filter: blur(16px) saturate(1.14); }
+html[data-theme] .sidebar, html[data-theme] .topbar {
+  background: color-mix(in srgb, var(--surface) calc(var(--chrome-opacity) * 100%), transparent) !important;
+  backdrop-filter: blur(18px) saturate(1.15);
+}
 .login-form input { color: #f7fbff; background: rgba(2,9,16,.88); text-shadow: 0 1px 2px #000; }
 html[data-theme="light"] .login-form input { color: #08131d; background: rgba(255,255,255,.92); text-shadow: none; }
 .login-link-button { border: 0; padding: 2px; color: var(--accent); background: transparent; cursor: pointer; font-size: 10px; text-align: center; }
@@ -682,7 +686,8 @@ html[data-theme="light"] .login-form input { color: #08131d; background: rgba(25
 .supporting-attachment-editor { margin-top: 15px; padding: 13px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-soft); }
 .supporting-heading { display:flex;align-items:center;justify-content:space-between;gap:14px;margin-bottom:10px; }.supporting-heading b,.supporting-heading small { display:block; }.supporting-heading small { margin-top:5px;color:var(--muted);font-size:8px;line-height:1.5; }
 .support-kind-select { display:flex;align-items:center;gap:8px;margin-bottom:9px;color:var(--muted);font-size:9px; }.support-kind-select select { min-height:32px; }
-.supporting-attachment-list { display:grid;gap:6px; }.supporting-file-item { display:grid;grid-template-columns:minmax(0,1fr) auto auto;gap:7px;align-items:center;padding:8px 10px;border:1px solid var(--line);border-radius:6px;background:var(--item-bg); }.supporting-file-item b,.supporting-file-item small { display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap; }.supporting-file-item b { font-size:9px; }.supporting-file-item small { margin-top:4px;color:var(--muted);font-size:8px; }
+.supporting-attachment-list { display:grid;gap:8px; }.supporting-file-item { display:grid;grid-template-columns:96px minmax(0,1fr) auto auto;gap:9px;align-items:center;padding:8px 10px;border:1px solid var(--line);border-radius:6px;background:var(--item-bg); }.supporting-file-item b,.supporting-file-item small { display:block;overflow:hidden;text-overflow:ellipsis;white-space:normal; }.supporting-file-item b { font-size:9px; }.supporting-file-item small { margin-top:4px;color:var(--muted);font-size:8px;line-height:1.5; }.supporting-preview-button { width:96px;height:70px;padding:0;border:0;background:transparent;cursor:zoom-in; }.supporting-preview-button .attachment-thumb { width:96px;height:70px;font-size:14px; }.supporting-preview-button:hover .attachment-thumb { border-color:var(--accent);box-shadow:0 0 0 2px rgba(var(--accent-rgb),.10); }
+.danger-card { border-color:rgba(255,77,93,.34) !important; background:linear-gradient(145deg,color-mix(in srgb,var(--panel) 92%,#4b1018),var(--surface-soft)) !important; }
 .batch-review-list { display:grid;gap:8px;margin-top:12px;max-height:340px;overflow:auto; }.batch-review-card { display:grid;grid-template-columns:minmax(0,1fr) repeat(2,minmax(130px,.45fr)) auto;align-items:center;gap:8px;padding:10px;border:1px solid var(--line);border-radius:7px;background:var(--item-bg); }.batch-review-card b,.batch-review-card small { display:block; }.batch-review-card small { margin-top:4px;color:var(--muted);font-size:8px; }
 
 .reference-credit-panel { margin-top: 16px; }.reference-credit-panel > p { color:var(--muted);font-size:9px;line-height:1.55; }.reference-credit-list { display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:7px; }.reference-credit-item { padding:10px;border:1px solid var(--line);border-radius:6px;background:var(--item-bg); }.reference-credit-item a { color:var(--accent);font-weight:800;font-size:10px; }.reference-credit-item small { display:block;margin-top:5px;color:var(--muted);font-size:8px;line-height:1.5; }

@@ -86,6 +86,7 @@ from .database import (
     utc_now,
 )
 from .feedback import deliver_feedback
+from .maintenance import clear_current_season_data
 from .ocr_engine import create_ocr_job, get_ocr_job, parse_invoice_text, warmup_ocr
 from .platform_features import (
     OFFICE_EXCEL,
@@ -2097,6 +2098,32 @@ async def demo_delete(request: Request) -> dict[str, Any]:
     count = delete_demo_data(auth.user)
     await hub.notify()
     return {"ok": True, "deleted_count": count}
+
+
+@app.delete("/api/admin/current-season-data")
+async def current_season_data_delete(request: Request) -> dict[str, Any]:
+    auth = get_auth(request)
+    require_csrf(request, auth)
+    require_admin(auth)
+    with connect() as conn:
+        season = current_season(conn)
+    safe_season = re.sub(r"[^0-9A-Za-z\u4e00-\u9fff_-]+", "_", str(season["name"]))[:40]
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    backup_path = RUNTIME_HOME / "backups" / f"清除{safe_season}数据前完整备份_{stamp}.zip"
+    try:
+        await asyncio.to_thread(_create_backup_archive, backup_path)
+        result = await asyncio.to_thread(
+            clear_current_season_data, auth.user["id"], auth.session["id"]
+        )
+    except (OSError, sqlite3.Error, RuntimeError) as exc:
+        raise HTTPException(status_code=500, detail=f"清除失败，数据未完整修改：{exc}") from exc
+    await hub.notify("season_cleared")
+    result.update({
+        "ok": True,
+        "backup_path": str(backup_path),
+        "message": f"{season['name']}数据已清除，当前管理员账号和公共查看账号已保留",
+    })
+    return result
 
 
 @app.put("/api/admin/settings")

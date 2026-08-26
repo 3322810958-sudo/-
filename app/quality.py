@@ -103,6 +103,9 @@ def sync_ocr_issues(
     *,
     user_id: str | None = None,
 ) -> None:
+    # A completed recognition supersedes earlier import/OCR failures.
+    for issue_type in ("ocr_failed", "import_failed"):
+        resolve_invoice_issue_type(conn, invoice_id, issue_type)
     try:
         threshold = max(0.1, min(0.99, float(setting(conn, "ocr_confidence_threshold", "0.80"))))
     except ValueError:

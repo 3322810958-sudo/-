@@ -4,7 +4,7 @@ import json
 import os
 import re
 import threading
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from pathlib import Path
 from statistics import mean
 from typing import Any
@@ -12,12 +12,13 @@ from typing import Any
 from .attachments import attachment_path
 from .business import PRODUCT_TYPES, to_cents
 from .classification import classify_invoice, detect_product_type as smart_detect_product_type
-from .config import MODEL_DIR, OCR_CPU_THREADS, OCR_DETECTION_MAX_SIDE, OCR_WORKERS
+from .config import MODEL_DIR, OCR_CPU_THREADS, OCR_DETECTION_MAX_SIDE, OCR_TIMEOUT_SECONDS, OCR_WORKERS
 from .database import audit, connect, current_season_id, enqueue_sync_event, get_device_id, new_id, transaction, utc_now
 from .quality import record_issue, sync_ocr_issues
 
 
 OCR_EXECUTOR = ThreadPoolExecutor(max_workers=OCR_WORKERS, thread_name_prefix="yxrt-ocr")
+OCR_INFERENCE_EXECUTOR = ThreadPoolExecutor(max_workers=OCR_WORKERS, thread_name_prefix="yxrt-ocr-inference")
 OCR_INSTANCE: Any = None
 OCR_LOCK = threading.Lock()
 
@@ -265,7 +266,18 @@ def create_ocr_job(attachment_id: str, user_id: str, invoice_id: str | None = No
 
 def warmup_ocr() -> None:
     """Load the local mobile OCR models in the background before first use."""
-    OCR_EXECUTOR.submit(_get_ocr)
+    OCR_INFERENCE_EXECUTOR.submit(_get_ocr)
+
+
+def _recognize_with_timeout(attachment: dict[str, Any]) -> dict[str, Any]:
+    future = OCR_INFERENCE_EXECUTOR.submit(recognize_attachment, attachment)
+    try:
+        return future.result(timeout=OCR_TIMEOUT_SECONDS)
+    except FutureTimeoutError as exc:
+        future.cancel()
+        raise RuntimeError(
+            f"离线识别超过 {OCR_TIMEOUT_SECONDS} 秒，已停止等待，请人工校对或稍后重试"
+        ) from exc
 
 
 def _run_job(job_id: str) -> None:
@@ -289,10 +301,10 @@ def _run_job(job_id: str) -> None:
             try:
                 result = json.loads(cached["result_json"] or "{}")
             except json.JSONDecodeError:
-                result = recognize_attachment(dict(attachment))
+                result = _recognize_with_timeout(dict(attachment))
             result["ocr_engine"] = f"{result.get('ocr_engine') or 'paddleocr'}_cache"
         else:
-            result = recognize_attachment(dict(attachment))
+            result = _recognize_with_timeout(dict(attachment))
         with transaction() as conn:
             result.update(classify_invoice(
                 conn,

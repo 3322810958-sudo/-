@@ -4,9 +4,9 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#07101b">
-  <title>燕翔车队经费管理系统 V2.3.2</title>
+  <title>燕翔车队经费管理系统 V2.3.3</title>
   <link rel="icon" href="/static/assets/team-logo.png">
-  <link rel="stylesheet" href="/static/app.css?v=2.3.2">
+  <link rel="stylesheet" href="/static/app.css?v=2.3.3">
 </head>
 <body>
   <div id="backgroundLayer" class="background-layer"><video id="appBackgroundVideo" muted loop autoplay playsinline></video></div>
@@ -34,7 +34,7 @@
       <div class="login-brand">
         <img src="/static/assets/team-logo.png" alt="燕翔车队队标">
         <div>
-          <p class="eyebrow">赛车运营 · V2.3.2</p>
+          <p class="eyebrow">赛车运营 · V2.3.3</p>
           <h1><span id="loginTeamName">燕翔车队</span><br><span>经费管理系统</span></h1>
         </div>
       </div>
@@ -77,7 +77,7 @@
         <div id="syncLamp" class="status-lamp"></div>
         <div><strong id="syncLabel">本地模式</strong><small id="syncDetail">数据安全保存在本机</small></div>
       </div>
-      <div class="sidebar-foot"><span>燕翔车队经费</span><span id="versionLabel">V2.3.2</span></div>
+      <div class="sidebar-foot"><span>燕翔车队经费</span><span id="versionLabel">V2.3.3</span></div>
     </aside>
 
     <div class="content-shell">
@@ -208,6 +208,7 @@
             <article class="panel setting-card" data-admin><div class="setting-icon">↕</div><div><h3>云端自动同步</h3><p id="syncSettingText">未配置云端服务器。</p><button id="openSyncBtn" class="btn secondary">配置同步</button></div></article>
             <article class="panel setting-card" data-admin><div class="setting-icon">备份</div><div><h3>备份与恢复</h3><p>完整保留全部赛季、人员、组别、账号、发票和附件，并附可查看清单。</p><div class="inline-actions"><button id="downloadBackupBtn" type="button" class="btn secondary">下载完整备份</button><label class="btn danger subtle">恢复备份<input id="restoreBackupInput" type="file" accept=".zip" hidden></label></div></div></article>
             <article class="panel setting-card" data-admin><div class="setting-icon">演示</div><div><h3>演示数据</h3><p>只清除初始演示记录，不影响正式数据。</p><button id="deleteDemoBtn" class="btn danger subtle">清除演示数据</button></div></article>
+            <article class="panel setting-card danger-card" data-admin><div class="setting-icon">清除</div><div><h3>清除当前赛季数据</h3><p>清除当前赛季发票、成员、成员账号及个人设置；保留当前管理员、公共账号、组别、创作者和其他赛季。</p><button id="clearCurrentSeasonBtn" class="btn danger">清除当前赛季</button></div></article>
             <article class="panel setting-card"><div class="setting-icon">识别</div><div><h3>离线文字识别</h3><p>优先读取 PDF 文本，扫描件使用本地识别引擎，不上传第三方。</p><span class="setting-state good">本机运行</span></div></article>
             <article class="panel setting-card"><div class="setting-icon">版本</div><div><h3>更新日志与无损自动更新</h3><p>所有成员均可检查并一键升级；数据库、附件、账号与界面设置保持不变。</p><button id="openUpdateBtn" class="btn secondary">版本与更新</button></div></article>
             <article class="panel setting-card"><div class="setting-icon">音乐</div><div><h3>个人界面、音频与设置包</h3><p>导入自有或已获授权音乐；顺序、单曲或随机播放。默认静音。</p><button id="openPersonalSettingsBtn" class="btn secondary">个人界面设置</button></div></article>
@@ -298,7 +299,8 @@
     <form id="batchActionForm" class="modal-card">
       <header><div><p class="eyebrow">批量修改</p><h3>修改所选发票</h3></div><button type="button" class="dialog-close" data-close="batchActionDialog">×</button></header>
       <p id="batchActionSummary" class="batch-action-summary"></p>
-      <label class="full-label"><span>修改项目</span><select id="batchActionType"><option value="category">费用分类</option><option value="status">报销状态</option></select></label>
+      <label class="full-label"><span>修改项目</span><select id="batchActionType"><option value="funding_source">资金来源（核心）</option><option value="category">费用分类</option><option value="status">报销状态</option></select></label>
+      <label id="batchSourceActionWrap" class="full-label"><span>目标资金来源</span><select id="batchActionSource"></select><small>选项与单张发票录入界面完全一致，可在“分类与资金来源”中维护。</small></label>
       <label id="batchCategoryActionWrap" class="full-label"><span>目标分类</span><select id="batchActionCategory"></select></label>
       <div id="batchStatusActionWrap" class="hidden">
         <label class="full-label"><span>目标状态</span><select id="batchActionStatus"><option value="pending">未报销</option><option value="partial">部分报销</option><option value="reimbursed">已报销</option></select></label>
@@ -387,7 +389,7 @@
           </div>
           <div class="form-grid two"><label><span>系统名称</span><input id="teamNameSetting"></label><label><span>主题强调色</span><input id="accentColor" type="color" value="#27d3ff"></label></div>
           <label class="full-label"><span>背景遮罩强度 <b id="overlayValue">82%</b></span><input id="backgroundOverlay" type="range" min="20" max="98" value="82"></label>
-          <label class="full-label"><span>登录框透明度 <b id="loginOpacityValue">78%</b></span><input id="loginPanelOpacity" type="range" min="35" max="100" value="78"></label>
+          <label class="full-label"><span>登录框及顶部/左侧导航透明度 <b id="loginOpacityValue">78%</b></span><input id="loginPanelOpacity" type="range" min="35" max="100" value="78"><small>仅背景透明，文字与按钮保持高对比度。</small></label>
           <div class="form-grid two"><label class="switch-row"><span><b>登录背景随机</b><small>从轮播素材随机开始</small></span><input id="loginRandomEnabled" type="checkbox"></label><label class="switch-row"><span><b>全局背景随机</b><small>登录后也随机展示已配置背景</small></span><input id="globalBackgroundRandom" type="checkbox"></label></div>
           <div class="background-preset-row"><span>背景清晰度预设</span><button type="button" data-overlay-preset="35">非常明显</button><button type="button" data-overlay-preset="50">明显</button><button type="button" data-overlay-preset="68">均衡</button><button type="button" data-overlay-preset="82">清晰文字</button><button type="button" data-overlay-preset="92">弱背景</button></div>
           <div class="background-control"><div id="backgroundPreview" class="media-preview empty">当前使用默认赛车背景</div><div><label class="btn secondary media-upload-btn">上传自定义背景<input id="backgroundFile" type="file" accept="image/*,video/mp4,video/webm,.gif,.m4v" hidden></label><button id="clearBackgroundBtn" type="button" class="btn danger subtle">恢复默认背景</button><small>支持图片、GIF、MP4 和 WebM，文件保存在本机。</small></div></div>
@@ -472,7 +474,7 @@
   <dialog id="updateDialog" class="modal">
     <div class="modal-card">
       <header><div><p class="eyebrow">版本管理</p><h3>更新日志与自动更新</h3></div><button type="button" class="dialog-close" data-close="updateDialog">×</button></header>
-      <div class="update-current"><div><span>当前版本</span><strong id="updateCurrentVersion">V2.3.2</strong></div><label class="mini-switch"><input id="autoUpdateCheck" type="checkbox" checked><span>启动后自动检查</span></label></div>
+      <div class="update-current"><div><span>当前版本</span><strong id="updateCurrentVersion">V2.3.3</strong></div><label class="mini-switch"><input id="autoUpdateCheck" type="checkbox" checked><span>启动后自动检查</span></label></div>
       <label class="update-mode-choice"><span>更新方式</span><select id="updateInstallMode"><option value="auto">自动完整备份并更新（推荐）</option><option value="manual">手动下载补丁包并覆盖</option></select><small id="updateModeHint">安装前自动备份全部赛季、人员、组别、账号、发票与附件，再重启更新。</small></label>
       <div class="update-actions"><button id="checkUpdateBtn" type="button" class="btn secondary">检查 GitHub 新版本</button><a id="updateReleaseLink" class="btn secondary hidden" target="_blank" rel="noopener">查看发布页面</a><button id="installUpdateBtn" type="button" class="btn primary hidden">一键更新到最新版</button></div>
       <div id="updateStatus" class="update-status">正在读取本地更新日志……</div>
@@ -547,6 +549,6 @@
       <small id="loadingDetail">任务正在本机运行，请勿关闭软件</small>
     </div>
   </div>
-  <script src="/static/app.js?v=2.3.2"></script>
+  <script src="/static/app.js?v=2.3.3"></script>
 </body>
 </html>

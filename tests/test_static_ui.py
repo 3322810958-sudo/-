@@ -55,6 +55,7 @@ def test_season_and_creator_interfaces_are_wired() -> None:
 def test_v222_previews_pdf_backup_and_defaults_are_wired() -> None:
     for element_id in (
         "invoiceAttachmentPreview", "batchFilePreview", "attachmentViewerDialog",
+        "batchActionSource", "batchSourceActionWrap", "clearCurrentSeasonBtn",
         "exportPdfBtn", "pdfExportDialog", "downloadBackupBtn", "invoiceDefaultsDialog",
     ):
         assert f'id="{element_id}"' in HTML

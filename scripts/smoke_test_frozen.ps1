@@ -1,17 +1,20 @@
 param(
   [string]$Executable = "",
-  [string]$ExpectedVersion = "2.3.2",
+  [string]$ExpectedVersion = "2.3.3",
   [int]$Port = 8792
 )
 
 $ErrorActionPreference = "Stop"
 $root = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
 if (-not $Executable) {
-  $Executable = Join-Path $root "dist\燕翔车队经费管理系统\燕翔车队经费管理系统.exe"
+  $distRoot = Join-Path $root "dist"
+  $Executable = Get-ChildItem -LiteralPath $distRoot -Directory |
+    ForEach-Object { Get-ChildItem -LiteralPath $_.FullName -Filter "*.exe" -File } |
+    Select-Object -First 1 -ExpandProperty FullName
 }
 $exePath = [IO.Path]::GetFullPath($Executable)
 if (-not (Test-Path -LiteralPath $exePath -PathType Leaf)) {
-  throw "未找到待测试主程序：$exePath"
+  throw "Frozen executable not found: $exePath"
 }
 
 $runtime = Join-Path $root "tmp\frozen-smoke-$ExpectedVersion"
@@ -32,9 +35,9 @@ try {
       Start-Sleep -Milliseconds 500
     }
   }
-  if ($process.HasExited) { throw "主程序提前退出，退出码：$($process.ExitCode)" }
+  if ($process.HasExited) { throw "Frozen executable exited early: $($process.ExitCode)" }
   if ($null -eq $health -or $health.version -ne $ExpectedVersion) {
-    throw "主程序未在限定时间内通过健康检查"
+    throw "Frozen executable did not pass the health check in time"
   }
   Write-Host "FROZEN_SMOKE_OK version=$($health.version) pid=$($process.Id)"
 } finally {

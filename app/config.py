@@ -207,6 +207,7 @@ DEFAULT_OCR_CPU_THREADS = max(2, CPU_COUNT // OCR_WORKERS)
 CONFIGURED_OCR_CPU_THREADS = int(os.environ.get("YXRT_OCR_CPU_THREADS", "0"))
 OCR_CPU_THREADS = max(2, min(10, DEFAULT_OCR_CPU_THREADS if CONFIGURED_OCR_CPU_THREADS <= 0 else CONFIGURED_OCR_CPU_THREADS))
 OCR_DETECTION_MAX_SIDE = max(960, min(4000, int(os.environ.get("YXRT_OCR_MAX_SIDE", "2200"))))
+OCR_TIMEOUT_SECONDS = max(30, min(300, int(os.environ.get("YXRT_OCR_TIMEOUT", "90"))))
 DEVICE_LABEL = os.environ.get("YXRT_DEVICE_LABEL", "Windows 本地端" if APP_MODE == "desktop" else "云端服务器")
 
 SUPPORTED_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp"}

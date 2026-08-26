@@ -8,7 +8,9 @@ from fastapi.testclient import TestClient
 from pypdf import PdfWriter
 
 from app.main import app
+from app.database import transaction
 from app.desktop import desktop_server_config
+from app.quality import record_issue, sync_ocr_issues
 from app.updater import UPDATE_REPOSITORY, _safe_asset_url
 from launcher import ensure_runtime_streams
 from tests.test_api import login
@@ -107,7 +109,7 @@ def test_feedback_queue_and_avatar_permissions():
 def test_update_repository_matches_current_github_location():
     assert UPDATE_REPOSITORY == "3322810958-sudo/YXRT_Money_APP"
     assert _safe_asset_url(
-        "https://github.com/3322810958-sudo/YXRT_Money_APP/releases/download/v2.3.2/update.zip"
+        "https://github.com/3322810958-sudo/YXRT_Money_APP/releases/download/v2.3.3/update.zip"
     )
 
 
@@ -121,3 +123,50 @@ def test_windowed_launcher_supplies_streams_and_disables_uvicorn_terminal_loggin
     config = desktop_server_config("127.0.0.1", 8765)
     assert config.log_config is None
     assert config.access_log is False
+
+
+def test_successful_ocr_closes_previous_failure_issues():
+    with transaction() as conn:
+        invoice_id = str(conn.execute(
+            "SELECT id FROM invoices WHERE deleted_at IS NULL ORDER BY created_at LIMIT 1"
+        ).fetchone()[0])
+        record_issue(conn, "ocr_failed", "测试识别失败", invoice_id=invoice_id, severity="error")
+        record_issue(conn, "import_failed", "测试导入失败", invoice_id=invoice_id, severity="error")
+        sync_ocr_issues(conn, invoice_id, {"ocr_confidence": 0.95, "uncertain_fields": []})
+        remaining = conn.execute(
+            """SELECT COUNT(*) FROM invoice_quality_issues
+            WHERE invoice_id=? AND status='open' AND issue_type IN ('ocr_failed','import_failed')""",
+            (invoice_id,),
+        ).fetchone()[0]
+        assert remaining == 0
+
+
+def test_admin_can_clear_current_season_without_losing_admin_or_global_references():
+    with TestClient(app) as client:
+        _, headers = login(client, "admin", "YXRT@2026")
+        before = client.get("/api/bootstrap").json()
+        assert before["members"] and before["dashboard"]["invoice_count"] > 0
+        saved = client.put(
+            "/api/user/preferences", json={"theme": "graphite", "shortcuts": {"dashboard": "Alt+1"}},
+            headers=headers,
+        )
+        assert saved.status_code == 200
+        cleared = client.delete("/api/admin/current-season-data", headers=headers)
+        assert cleared.status_code == 200, cleared.text
+        result = cleared.json()
+        assert result["counts"]["invoices"] > 0
+        assert result["counts"]["members"] > 0
+        assert result["backup_path"].endswith(".zip")
+        after = client.get("/api/bootstrap")
+        assert after.status_code == 200
+        payload = after.json()
+        assert payload["user"]["role"] == "admin"
+        assert payload["members"] == []
+        assert payload["dashboard"]["invoice_count"] == 0
+        assert payload["departments"]
+        assert payload["creators"]
+        assert client.get("/api/user/preferences").json()["settings"] == {}
+        public_login = client.post(
+            "/api/auth/login", json={"username": "viewer", "password": "View@2026"}
+        )
+        assert public_login.status_code == 200

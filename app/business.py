@@ -366,7 +366,7 @@ def batch_update_invoices(payload: dict[str, Any], user: dict[str, Any]) -> dict
         raise BusinessError("单次最多处理 10000 张发票")
 
     action = str(payload.get("action") or "")
-    if action not in {"delete", "category", "status"}:
+    if action not in {"delete", "category", "funding_source", "status"}:
         raise BusinessError("不支持该批量操作")
 
     placeholders = ",".join("?" for _ in invoice_ids)
@@ -383,6 +383,7 @@ def batch_update_invoices(payload: dict[str, Any], user: dict[str, Any]) -> dict
         device_id = get_device_id(conn)
         skipped = 0
         category_id: str | None = None
+        funding_source_id: str | None = None
         target_status = ""
         ratio = 50
         if action == "category":
@@ -391,6 +392,13 @@ def batch_update_invoices(payload: dict[str, Any], user: dict[str, Any]) -> dict
                 "SELECT 1 FROM categories WHERE id=? AND deleted_at IS NULL", (category_id,)
             ).fetchone():
                 raise BusinessError("所选费用分类不存在")
+        elif action == "funding_source":
+            funding_source_id = str(payload.get("funding_source_id") or "") or None
+            if funding_source_id and not conn.execute(
+                "SELECT 1 FROM funding_sources WHERE id=? AND active=1 AND deleted_at IS NULL",
+                (funding_source_id,),
+            ).fetchone():
+                raise BusinessError("所选资金来源不存在或已停用")
         elif action == "status":
             target_status = str(payload.get("status") or "")
             if target_status not in {"pending", "partial", "reimbursed"}:
@@ -400,7 +408,10 @@ def batch_update_invoices(payload: dict[str, Any], user: dict[str, Any]) -> dict
             except (TypeError, ValueError):
                 raise BusinessError("部分报销比例格式不正确") from None
 
-        labels = {"delete": "批量删除发票前", "category": "批量修改分类前", "status": "批量修改报销状态前"}
+        labels = {
+            "delete": "批量删除发票前", "category": "批量修改分类前",
+            "funding_source": "批量修改资金来源前", "status": "批量修改报销状态前",
+        }
         create_snapshot(conn, user["id"], labels[action], f"共选择 {len(rows)} 张发票")
         changed = 0
         total_cents = 0
@@ -415,6 +426,8 @@ def batch_update_invoices(payload: dict[str, Any], user: dict[str, Any]) -> dict
                 sync_action = "delete"
             elif action == "category":
                 row["category_id"] = category_id
+            elif action == "funding_source":
+                row["funding_source_id"] = funding_source_id
             else:
                 total = int(row["total_amount_cents"] or 0)
                 if target_status == "partial" and total <= 1:
@@ -453,6 +466,7 @@ def batch_update_invoices(payload: dict[str, Any], user: dict[str, Any]) -> dict
         audit(conn, user["id"], f"batch_{action}", "invoice", None, {
             "requested": len(invoice_ids), "changed": changed, "skipped": skipped,
             "amount": yuan(total_cents), "status": target_status, "category_id": category_id,
+            "funding_source_id": funding_source_id,
         })
         return {"ok": True, "changed_count": changed, "skipped_count": skipped, "total_amount": yuan(total_cents)}
 

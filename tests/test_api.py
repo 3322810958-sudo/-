@@ -206,6 +206,18 @@ def test_v22_selected_csv_batch_actions_and_submitter_columns():
         assert category_update.status_code == 200, category_update.text
         assert category_update.json()["changed_count"] == 2
 
+        source_update = client.post(
+            "/api/invoices/batch-action",
+            json={
+                "ids": [item["id"] for item in chosen],
+                "action": "funding_source",
+                "funding_source_id": "src_yuanda_loan",
+            },
+            headers=headers,
+        )
+        assert source_update.status_code == 200, source_update.text
+        assert source_update.json()["changed_count"] == 2
+
         status_update = client.post(
             "/api/invoices/batch-action",
             json={
@@ -218,6 +230,7 @@ def test_v22_selected_csv_batch_actions_and_submitter_columns():
         assert status_update.json()["changed_count"] == 2
         refreshed = {item["id"]: item for item in client.get("/api/invoices").json()["items"]}
         assert all(refreshed[item["id"]]["reimbursement_status"] == "reimbursed" for item in chosen)
+        assert all(refreshed[item["id"]]["funding_source_name"] == "远达借款" for item in chosen)
 
     with TestClient(app) as viewer:
         _, viewer_headers = login(viewer, "viewer", "View@2026")

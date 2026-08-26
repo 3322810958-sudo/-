@@ -602,6 +602,22 @@ def _migrate_season_schema(conn: sqlite3.Connection) -> None:
 def _migrate_v23_schema(conn: sqlite3.Connection) -> None:
     _ensure_column(conn, "members", "avatar_attachment_id", "TEXT REFERENCES attachments(id) ON DELETE SET NULL")
     now = utc_now()
+    device_id = get_device_id(conn)
+    # Keep existing customized sources and add the commonly used team options
+    # for upgraded databases. Administrators may still rename or disable them.
+    common_sources = (
+        ("src_yuanda_loan", "远达借款", "loan", "#f97316"),
+        ("src_department_aa", "部门AA", "aa", "#fb7185"),
+        ("src_personal_advance", "个人垫付", "other", "#38bdf8"),
+        ("src_teacher_advance", "老师垫付", "reimbursement", "#ffb020"),
+    )
+    for index, (source_id, name, source_type, color) in enumerate(common_sources, start=100):
+        conn.execute(
+            """INSERT OR IGNORE INTO funding_sources(
+            id,name,source_type,color,active,sort_order,created_at,updated_at,version,device_id,deleted_at
+            ) VALUES(?,?,?,?,1,?,?,?,?,?,NULL)""",
+            (source_id, name, source_type, color, index, now, now, 1, device_id),
+        )
     admin = conn.execute(
         """SELECT id,username,password_hash FROM users
         WHERE role='admin' AND active=1 AND deleted_at IS NULL ORDER BY created_at LIMIT 1"""
