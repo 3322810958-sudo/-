@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 from pypdf import PdfWriter
 
 from app.main import app
+from app.updater import UPDATE_REPOSITORY, _safe_asset_url
 from tests.test_api import login
 
 
@@ -98,3 +99,10 @@ def test_feedback_queue_and_avatar_permissions():
         )
         assert feedback.status_code == 200, feedback.text
         assert feedback.json()["status"] in {"queued", "sent"}
+
+
+def test_update_repository_matches_current_github_location():
+    assert UPDATE_REPOSITORY == "3322810958-sudo/YXRT_Money_APP"
+    assert _safe_asset_url(
+        "https://github.com/3322810958-sudo/YXRT_Money_APP/releases/download/v2.3.1/update.zip"
+    )

@@ -17,7 +17,7 @@ from .config import TMP_DIR
 from .database import new_id, utc_now
 
 
-UPDATE_REPOSITORY = os.environ.get("YXRT_UPDATE_REPOSITORY", "3322810958-sudo/-").strip().strip("/")
+UPDATE_REPOSITORY = os.environ.get("YXRT_UPDATE_REPOSITORY", "3322810958-sudo/YXRT_Money_APP").strip().strip("/")
 UPDATE_API = f"https://api.github.com/repos/{UPDATE_REPOSITORY}/releases/latest"
 UPDATE_JOBS: dict[str, dict[str, Any]] = {}
 UPDATE_LOCK = threading.Lock()
