@@ -366,7 +366,7 @@ def batch_update_invoices(payload: dict[str, Any], user: dict[str, Any]) -> dict
         raise BusinessError("单次最多处理 10000 张发票")
 
     action = str(payload.get("action") or "")
-    if action not in {"delete", "category", "funding_source", "status"}:
+    if action not in {"delete", "category", "funding_source", "status", "full_update"}:
         raise BusinessError("不支持该批量操作")
 
     placeholders = ",".join("?" for _ in invoice_ids)
@@ -386,6 +386,8 @@ def batch_update_invoices(payload: dict[str, Any], user: dict[str, Any]) -> dict
         funding_source_id: str | None = None
         target_status = ""
         ratio = 50
+        full_values: dict[str, Any] = {}
+        full_splits: dict[str, int] = {}
         if action == "category":
             category_id = str(payload.get("category_id") or "") or None
             if category_id and not conn.execute(
@@ -407,10 +409,55 @@ def batch_update_invoices(payload: dict[str, Any], user: dict[str, Any]) -> dict
                 ratio = max(1, min(99, int(payload.get("reimbursement_ratio", 50))))
             except (TypeError, ValueError):
                 raise BusinessError("部分报销比例格式不正确") from None
+        elif action == "full_update":
+            total_cents = to_cents(payload.get("total_amount"))
+            if total_cents <= 0:
+                raise BusinessError("发票金额必须大于 0")
+            tax_cents = to_cents(payload.get("tax_amount", 0))
+            reimbursed_cents = to_cents(payload.get("reimbursed_amount", 0))
+            if reimbursed_cents > total_cents:
+                raise BusinessError("已报销金额不能超过发票总额")
+            invoice_date = str(payload.get("invoice_date") or "")[:10]
+            if len(invoice_date) != 10:
+                raise BusinessError("请选择开票日期")
+            burden_type = str(payload.get("burden_type") or "team_aa")
+            if burden_type not in {"team_aa", "self_paid", "specified_split"}:
+                raise BusinessError("费用承担方式不正确")
+            payer_id = str(payload.get("payer_member_id") or "")
+            if not conn.execute(
+                "SELECT 1 FROM members WHERE id=? AND season_id=? AND active=1 AND deleted_at IS NULL",
+                (payer_id, season_id),
+            ).fetchone():
+                raise BusinessError("请选择有效垫付成员")
+            category_id = str(payload.get("category_id") or "") or None
+            funding_source_id = str(payload.get("funding_source_id") or "") or None
+            for table, value, label in (("categories", category_id, "分类"), ("funding_sources", funding_source_id, "资金来源")):
+                if value and not conn.execute(
+                    f"SELECT 1 FROM {table} WHERE id=? AND deleted_at IS NULL", (value,)
+                ).fetchone():
+                    raise BusinessError(f"所选{label}不存在")
+            full_splits = _validated_splits(conn, payload, total_cents, payer_id, burden_type)
+            full_values = {
+                "invoice_no": str(payload.get("invoice_no") or "").strip()[:80],
+                "vendor": str(payload.get("vendor") or "").strip()[:160],
+                "invoice_date": invoice_date,
+                "total_amount_cents": total_cents,
+                "tax_amount_cents": tax_cents,
+                "category_id": category_id,
+                "product_type": str(payload.get("product_type") or "其他").strip()[:80] or "其他",
+                "payer_member_id": payer_id,
+                "burden_type": burden_type,
+                "reimbursement_status": "pending" if reimbursed_cents == 0 else ("reimbursed" if reimbursed_cents == total_cents else "partial"),
+                "reimbursed_amount_cents": reimbursed_cents,
+                "reimbursement_date": str(payload.get("reimbursement_date") or "")[:10] or None,
+                "funding_source_id": funding_source_id,
+                "note": str(payload.get("note") or "").strip()[:2000],
+            }
 
         labels = {
             "delete": "批量删除发票前", "category": "批量修改分类前",
             "funding_source": "批量修改资金来源前", "status": "批量修改报销状态前",
+            "full_update": "批量统一修改发票前",
         }
         create_snapshot(conn, user["id"], labels[action], f"共选择 {len(rows)} 张发票")
         changed = 0
@@ -428,7 +475,7 @@ def batch_update_invoices(payload: dict[str, Any], user: dict[str, Any]) -> dict
                 row["category_id"] = category_id
             elif action == "funding_source":
                 row["funding_source_id"] = funding_source_id
-            else:
+            elif action == "status":
                 total = int(row["total_amount_cents"] or 0)
                 if target_status == "partial" and total <= 1:
                     skipped += 1
@@ -443,6 +490,8 @@ def batch_update_invoices(payload: dict[str, Any], user: dict[str, Any]) -> dict
                     row["reimbursed_amount_cents"] = max(1, min(total - 1, int(round(total * ratio / 100))))
                     row["reimbursement_date"] = str(payload.get("reimbursement_date") or now[:10])[:10]
                 row["reimbursement_status"] = target_status
+            else:
+                row.update(full_values)
 
             columns = [key for key in row if key != "id"]
             conn.execute(
@@ -461,6 +510,44 @@ def batch_update_invoices(payload: dict[str, Any], user: dict[str, Any]) -> dict
                         (now, now, split["version"], device_id, split["id"]),
                     )
                     enqueue_sync_event(conn, "invoice_splits", split["id"], "delete", split)
+            elif action == "full_update":
+                previous_splits = [dict(item) for item in conn.execute(
+                    "SELECT * FROM invoice_splits WHERE invoice_id=?", (row["id"],)
+                ).fetchall()]
+                previous_by_member = {item["member_id"]: item for item in previous_splits}
+                desired_ids: set[str] = set()
+                for member_id, share_cents in full_splits.items():
+                    desired_ids.add(member_id)
+                    existing = previous_by_member.get(member_id)
+                    split_id = existing["id"] if existing else new_id("split")
+                    paid_cents = min(int(existing["paid_cents"]), share_cents) if existing else 0
+                    split_values = {
+                        "id": split_id, "season_id": season_id, "invoice_id": row["id"],
+                        "member_id": member_id, "share_cents": share_cents, "paid_cents": paid_cents,
+                        "status": "paid" if paid_cents >= share_cents else ("partial" if paid_cents else "pending"),
+                        "created_at": existing["created_at"] if existing else now, "updated_at": now,
+                        "version": int(existing["version"]) + 1 if existing else 1,
+                        "device_id": device_id, "deleted_at": None,
+                    }
+                    split_columns = list(split_values)
+                    conn.execute(
+                        f"INSERT OR REPLACE INTO invoice_splits({','.join(split_columns)}) VALUES({','.join('?' for _ in split_columns)})",
+                        tuple(split_values[column] for column in split_columns),
+                    )
+                    enqueue_sync_event(conn, "invoice_splits", split_id, "upsert", split_values)
+                for old in previous_splits:
+                    if old["member_id"] not in desired_ids and not old.get("deleted_at"):
+                        old.update({"deleted_at": now, "updated_at": now, "version": int(old["version"]) + 1, "device_id": device_id})
+                        conn.execute(
+                            "UPDATE invoice_splits SET deleted_at=?,updated_at=?,version=?,device_id=? WHERE id=?",
+                            (now, now, old["version"], device_id, old["id"]),
+                        )
+                        enqueue_sync_event(conn, "invoice_splits", old["id"], "delete", old)
+                conn.execute(
+                    """UPDATE invoice_quality_issues SET status='resolved',updated_at=?
+                    WHERE invoice_id=? AND status='open' AND issue_type IN ('low_confidence','ocr_failed','import_failed')""",
+                    (now, row["id"]),
+                )
             changed += 1
 
         audit(conn, user["id"], f"batch_{action}", "invoice", None, {

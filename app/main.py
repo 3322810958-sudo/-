@@ -86,6 +86,15 @@ from .database import (
     utc_now,
 )
 from .feedback import deliver_feedback
+from .integrations import (
+    IntegrationError,
+    normalize_ai_connectors,
+    normalize_nas_config,
+    protect_secret,
+    test_ai_connection,
+    test_nas_connection,
+    unprotect_secret,
+)
 from .maintenance import clear_current_season_data
 from .ocr_engine import create_ocr_job, get_ocr_job, parse_invoice_text, warmup_ocr
 from .platform_features import (
@@ -109,9 +118,85 @@ STOP_EVENT = threading.Event()
 APPEARANCE_SETTING_KEYS = (
     "team_name", "background_image", "background_media_id", "background_media_kind",
     "background_overlay", "accent_color", "login_slideshow_enabled", "login_slides",
-    "login_transition", "loading_cars", "login_panel_opacity", "login_random_enabled",
+    "login_transition", "loading_cars", "login_panel_opacity", "sidebar_transparency", "topbar_transparency", "login_random_enabled",
     "global_background_random",
 )
+
+LOGIN_INFO_REQUIRED_TYPES = {"credits", "updates", "motto", "philosophy"}
+
+
+def _default_login_info_items(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+    creator_names = [str(row[0]) for row in conn.execute(
+        "SELECT name FROM creators WHERE active=1 AND deleted_at IS NULL ORDER BY sort_order,name"
+    ).fetchall()]
+    credits = "创作者：" + ("、".join(creator_names) if creator_names else "燕翔车队软件组")
+    credits += "\n鸣谢：PaddleOCR、pypdf、pywebview、Tabler 等开源项目"
+    return [
+        {"id": "credits", "type": "credits", "title": "创作者与鸣谢", "content": credits, "visible": True},
+        {"id": "updates", "type": "updates", "title": "V2.3.4 本次更新", "content": "批量修改复用发票录入界面；登录信息轮播；侧栏与顶栏独立透明度；AI 与 NAS 接口预留。", "visible": True},
+        {"id": "season_total", "type": "total", "title": "当前赛季记款总金额", "content": "", "visible": True},
+        {"id": "motto", "type": "motto", "title": "队训", "content": "脚踏实地、精益求精", "visible": True},
+        {"id": "philosophy", "type": "philosophy", "title": "造车理念", "content": "品质、精致、极致", "visible": True},
+    ]
+
+
+def _normalize_login_info(conn: sqlite3.Connection, raw: Any) -> dict[str, Any]:
+    defaults = _default_login_info_items(conn)
+    default_by_type = {item["type"]: item for item in defaults}
+    source = raw if isinstance(raw, dict) else {}
+    try:
+        interval = max(3, min(60, int(source.get("interval", 7))))
+    except (TypeError, ValueError):
+        interval = 7
+    clean: list[dict[str, Any]] = []
+    seen_ids: set[str] = set()
+    seen_required: set[str] = set()
+    raw_items = source.get("items") if isinstance(source.get("items"), list) else []
+    for index, item in enumerate(raw_items[:40]):
+        if not isinstance(item, dict):
+            continue
+        item_type = str(item.get("type") or "custom")[:30]
+        item_id = re.sub(r"[^0-9A-Za-z_-]", "_", str(item.get("id") or f"custom_{index}"))[:80] or f"custom_{index}"
+        if item_id in seen_ids or (item_type in LOGIN_INFO_REQUIRED_TYPES and item_type in seen_required):
+            continue
+        required = item_type in LOGIN_INFO_REQUIRED_TYPES
+        clean.append({
+            "id": item_id,
+            "type": item_type,
+            "title": str(item.get("title") or default_by_type.get(item_type, {}).get("title") or "自定义信息")[:100],
+            "content": str(item.get("content") or default_by_type.get(item_type, {}).get("content") or "")[:3000],
+            "visible": True if required else bool(item.get("visible", True)),
+            "required": required,
+        })
+        seen_ids.add(item_id)
+        if required:
+            seen_required.add(item_type)
+    for item in defaults:
+        if item["type"] in LOGIN_INFO_REQUIRED_TYPES and item["type"] not in seen_required:
+            clean.append({**item, "required": True})
+        elif item["type"] == "total" and not any(value["type"] == "total" for value in clean):
+            clean.append({**item, "required": False})
+    season_id = current_season_id(conn)
+    total = int(conn.execute(
+        "SELECT COALESCE(SUM(total_amount_cents),0) FROM invoices WHERE season_id=? AND deleted_at IS NULL",
+        (season_id,),
+    ).fetchone()[0])
+    season = current_season(conn)
+    for item in clean:
+        if item["type"] == "total":
+            item["title"] = f"{season['name']}记款总金额"
+            item["content"] = f"¥{yuan(total):,.2f}"
+    return {"season_id": season_id, "season_name": season["name"], "interval": interval, "items": clean}
+
+
+def _login_info_for_season(conn: sqlite3.Connection) -> dict[str, Any]:
+    try:
+        mapping = json.loads(setting(conn, "login_info_panels", "{}"))
+    except json.JSONDecodeError:
+        mapping = {}
+    if not isinstance(mapping, dict):
+        mapping = {}
+    return _normalize_login_info(conn, mapping.get(current_season_id(conn), {}))
 
 OPEN_SOURCE_REFERENCES = (
     {"name": "PaddleOCR", "url": "https://github.com/PaddlePaddle/PaddleOCR", "license": "Apache-2.0", "use": "本地 OCR 与置信度设计参考"},
@@ -290,6 +375,8 @@ def _appearance_settings(conn: sqlite3.Connection) -> dict[str, Any]:
     values.setdefault("login_transition", "fade")
     values.setdefault("loading_cars", "[]")
     values.setdefault("login_panel_opacity", "0.78")
+    values.setdefault("sidebar_transparency", "0.22")
+    values.setdefault("topbar_transparency", "0.22")
     values.setdefault("login_random_enabled", "0")
     values.setdefault("global_background_random", "0")
 
@@ -333,6 +420,11 @@ def _appearance_settings(conn: sqlite3.Connection) -> dict[str, Any]:
         values["login_panel_opacity"] = max(0.35, min(1.0, float(values["login_panel_opacity"])))
     except (TypeError, ValueError):
         values["login_panel_opacity"] = 0.78
+    for key in ("sidebar_transparency", "topbar_transparency"):
+        try:
+            values[key] = max(0.0, min(1.0, float(values[key])))
+        except (TypeError, ValueError):
+            values[key] = 0.22
     raw_cars = values.get("loading_cars") or "[]"
     try:
         parsed_cars = json.loads(raw_cars) if isinstance(raw_cars, str) else raw_cars
@@ -363,6 +455,7 @@ def _appearance_settings(conn: sqlite3.Connection) -> dict[str, Any]:
             {"id": "default_formula_2", "attachment_id": "", "title": "方程式赛车二", "url": "/static/assets/loading-car-formula-2.png", "private_url": "/static/assets/loading-car-formula-2.png"},
         ]
     values["loading_cars"] = loading_cars
+    values["login_info"] = _login_info_for_season(conn)
     return values
 
 
@@ -2134,7 +2227,7 @@ async def settings_update(payload: dict[str, Any], request: Request) -> dict[str
     allowed = {
         "team_name", "background_image", "background_media_id", "background_overlay", "accent_color",
         "login_slideshow_enabled", "login_slides", "login_transition", "loading_cars",
-        "login_panel_opacity", "login_random_enabled", "global_background_random",
+        "login_panel_opacity", "sidebar_transparency", "topbar_transparency", "login_random_enabled", "global_background_random",
     }
     with transaction() as conn:
         create_snapshot(conn, auth.user["id"], "界面设置修改前", "全队显示设置")
@@ -2159,6 +2252,11 @@ async def settings_update(payload: dict[str, Any], request: Request) -> dict[str
                         value = str(max(0.35, min(1.0, float(payload[key]))))
                     except (TypeError, ValueError):
                         raise HTTPException(status_code=400, detail="登录面板透明度不正确") from None
+                elif key in {"sidebar_transparency", "topbar_transparency"}:
+                    try:
+                        value = str(max(0.0, min(1.0, float(payload[key]))))
+                    except (TypeError, ValueError):
+                        raise HTTPException(status_code=400, detail="导航透明度不正确") from None
                 elif key == "login_transition":
                     value = str(payload[key])
                     if value not in {"fade", "slide"}:
@@ -2224,6 +2322,143 @@ async def settings_update(payload: dict[str, Any], request: Request) -> dict[str
         settings = _appearance_settings(conn)
     await hub.notify("settings_changed")
     return {"ok": True, "settings": settings}
+
+
+@app.put("/api/admin/login-info")
+async def login_info_update(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    auth = get_auth(request)
+    require_csrf(request, auth)
+    require_admin(auth)
+    with transaction() as conn:
+        try:
+            mapping = json.loads(setting(conn, "login_info_panels", "{}"))
+        except json.JSONDecodeError:
+            mapping = {}
+        if not isinstance(mapping, dict):
+            mapping = {}
+        normalized = _normalize_login_info(conn, payload)
+        mapping[current_season_id(conn)] = {
+            "interval": normalized["interval"],
+            "items": [{key: item[key] for key in ("id", "type", "title", "content", "visible")} for item in normalized["items"]],
+        }
+        encoded = json.dumps(mapping, ensure_ascii=False, separators=(",", ":"))
+        if len(encoded.encode("utf-8")) > 256 * 1024:
+            raise HTTPException(status_code=400, detail="登录信息内容过大")
+        create_snapshot(conn, auth.user["id"], "登录信息修改前", normalized["season_name"])
+        set_setting(conn, "login_info_panels", encoded)
+        audit(conn, auth.user["id"], "update", "login_info", normalized["season_id"], {"items": len(normalized["items"])})
+        settings = _appearance_settings(conn)
+    await hub.notify("settings_changed")
+    return {"ok": True, "settings": settings}
+
+
+def _integration_settings(conn: sqlite3.Connection) -> dict[str, Any]:
+    try:
+        ai = normalize_ai_connectors(json.loads(setting(conn, "ai_connectors", "[]")))
+    except (json.JSONDecodeError, IntegrationError, ValueError):
+        ai = []
+    for item in ai:
+        item["has_secret"] = bool(setting(conn, f"ai_secret_{item['id']}", ""))
+    try:
+        nas = normalize_nas_config(json.loads(setting(conn, "nas_config", "{}")))
+    except (json.JSONDecodeError, IntegrationError):
+        nas = normalize_nas_config({})
+    nas["has_secret"] = bool(setting(conn, "nas_secret", ""))
+    return {"ai": ai, "nas": nas, "notice": "AI 暂不参与发票识别；NAS 仅预留连接配置，不执行同步。"}
+
+
+@app.get("/api/admin/integrations")
+async def integrations_get(request: Request) -> dict[str, Any]:
+    auth = get_auth(request)
+    require_admin(auth)
+    with connect() as conn:
+        return _integration_settings(conn)
+
+
+@app.put("/api/admin/integrations/ai")
+async def integrations_ai_update(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    auth = get_auth(request)
+    require_csrf(request, auth)
+    require_admin(auth)
+    raw_items = payload.get("items")
+    try:
+        clean = normalize_ai_connectors(raw_items)
+    except (IntegrationError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    raw_by_id = {str(item.get("id") or ""): item for item in raw_items if isinstance(item, dict)}
+    with transaction() as conn:
+        set_setting(conn, "ai_connectors", json.dumps(clean, ensure_ascii=False, separators=(",", ":")))
+        for item in clean:
+            raw = raw_by_id.get(item["id"], {})
+            if raw.get("clear_secret"):
+                set_setting(conn, f"ai_secret_{item['id']}", "", sync=False)
+            elif str(raw.get("api_key") or ""):
+                try:
+                    encrypted = protect_secret(str(raw["api_key"]))
+                except IntegrationError as exc:
+                    raise HTTPException(status_code=400, detail=str(exc)) from exc
+                set_setting(conn, f"ai_secret_{item['id']}", encrypted, sync=False)
+        audit(conn, auth.user["id"], "update", "ai_integrations", None, {"count": len(clean)})
+        result = _integration_settings(conn)
+    return {"ok": True, **result}
+
+
+@app.post("/api/admin/integrations/ai/test")
+async def integrations_ai_test(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    auth = get_auth(request)
+    require_csrf(request, auth)
+    require_admin(auth)
+    try:
+        connector = normalize_ai_connectors([payload.get("connector") or {}])[0]
+        secret = str((payload.get("connector") or {}).get("api_key") or "")
+        if not secret:
+            with connect() as conn:
+                encrypted = setting(conn, f"ai_secret_{connector['id']}", "")
+            secret = unprotect_secret(encrypted) if encrypted else ""
+        return await asyncio.to_thread(test_ai_connection, connector, secret)
+    except (IntegrationError, ValueError, IndexError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.put("/api/admin/integrations/nas")
+async def integrations_nas_update(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    auth = get_auth(request)
+    require_csrf(request, auth)
+    require_admin(auth)
+    try:
+        clean = normalize_nas_config(payload)
+    except IntegrationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    with transaction() as conn:
+        set_setting(conn, "nas_config", json.dumps(clean, ensure_ascii=False, separators=(",", ":")))
+        if payload.get("clear_secret"):
+            set_setting(conn, "nas_secret", "", sync=False)
+        elif str(payload.get("password") or ""):
+            try:
+                encrypted = protect_secret(str(payload["password"]))
+            except IntegrationError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+            set_setting(conn, "nas_secret", encrypted, sync=False)
+        audit(conn, auth.user["id"], "update", "nas_integration", None, {"protocol": clean["protocol"]})
+        result = _integration_settings(conn)
+    return {"ok": True, **result}
+
+
+@app.post("/api/admin/integrations/nas/test")
+async def integrations_nas_test(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    auth = get_auth(request)
+    require_csrf(request, auth)
+    require_admin(auth)
+    try:
+        clean = normalize_nas_config(payload)
+        password = str(payload.get("password") or "")
+        if not password:
+            with connect() as conn:
+                encrypted = setting(conn, "nas_secret", "")
+            password = unprotect_secret(encrypted) if encrypted else ""
+        return await asyncio.to_thread(test_nas_connection, clean, password)
+    except IntegrationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.put("/api/admin/invoice-defaults")

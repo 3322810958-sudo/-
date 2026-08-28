@@ -4,9 +4,9 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#07101b">
-  <title>燕翔车队经费管理系统 V2.3.3</title>
+  <title>燕翔车队经费管理系统 V2.3.4</title>
   <link rel="icon" href="/static/assets/team-logo.png">
-  <link rel="stylesheet" href="/static/app.css?v=2.3.3">
+  <link rel="stylesheet" href="/static/app.css?v=2.3.4">
 </head>
 <body>
   <div id="backgroundLayer" class="background-layer"><video id="appBackgroundVideo" muted loop autoplay playsinline></video></div>
@@ -30,11 +30,12 @@
       <div id="loginSlideCaption" class="login-slide-caption hidden"></div>
     </div>
     <div class="login-speedline"></div>
+    <div class="login-layout">
     <section class="login-card">
       <div class="login-brand">
         <img src="/static/assets/team-logo.png" alt="燕翔车队队标">
         <div>
-          <p class="eyebrow">赛车运营 · V2.3.3</p>
+          <p class="eyebrow">赛车运营 · V2.3.4</p>
           <h1><span id="loginTeamName">燕翔车队</span><br><span>经费管理系统</span></h1>
         </div>
       </div>
@@ -54,6 +55,12 @@
       </details>
       <footer><span>离线识别就绪</span><span>本地数据库</span><span>离线同步队列</span></footer>
     </section>
+    <aside id="loginInfoTicker" class="login-info-ticker" aria-live="polite">
+      <div class="login-info-top"><span id="loginInfoSeason">当前赛季</span><span id="loginInfoCounter">1 / 5</span></div>
+      <div id="loginInfoCard" class="login-info-card"><p>燕翔车队</p><h2>脚踏实地、精益求精</h2><div>正在读取当前赛季信息</div></div>
+      <div id="loginInfoDots" class="login-info-dots"></div>
+    </aside>
+    </div>
   </div>
 
   <div id="appShell" class="app-shell hidden">
@@ -77,7 +84,7 @@
         <div id="syncLamp" class="status-lamp"></div>
         <div><strong id="syncLabel">本地模式</strong><small id="syncDetail">数据安全保存在本机</small></div>
       </div>
-      <div class="sidebar-foot"><span>燕翔车队经费</span><span id="versionLabel">V2.3.3</span></div>
+      <div class="sidebar-foot"><span>燕翔车队经费</span><span id="versionLabel">V2.3.4</span></div>
     </aside>
 
     <div class="content-shell">
@@ -205,6 +212,7 @@
             <article class="panel setting-card" data-admin><div class="setting-icon">默认</div><div><h3>录入与批量导入默认值</h3><p>配置默认分类、成员、资金来源、承担方式与批次备注。</p><button id="openInvoiceDefaultsBtn" class="btn secondary">配置默认值</button></div></article>
             <article class="panel setting-card" data-admin><div class="setting-icon">壁纸</div><div><h3>界面、壁纸与登录轮播</h3><p>连接 Wallpaper Engine，或上传图片、动图和视频。</p><button id="openAppearanceBtn" class="btn secondary">配置界面</button></div></article>
             <article class="panel setting-card" data-admin><div class="setting-icon">分类</div><div><h3>发票智能分类</h3><p>编辑离线关键词规则，并结合商家历史选择自动学习。</p><button id="openClassificationBtn" class="btn secondary">管理识别规则</button></div></article>
+            <article class="panel setting-card" data-admin><div class="setting-icon">AI</div><div><h3>AI 接插件与 NAS 预留</h3><p>配置本地、国内、国外兼容接口和 NAS 连接；当前不参与离线发票识别。</p><button id="openIntegrationsBtn" class="btn secondary">配置接插件</button></div></article>
             <article class="panel setting-card" data-admin><div class="setting-icon">↕</div><div><h3>云端自动同步</h3><p id="syncSettingText">未配置云端服务器。</p><button id="openSyncBtn" class="btn secondary">配置同步</button></div></article>
             <article class="panel setting-card" data-admin><div class="setting-icon">备份</div><div><h3>备份与恢复</h3><p>完整保留全部赛季、人员、组别、账号、发票和附件，并附可查看清单。</p><div class="inline-actions"><button id="downloadBackupBtn" type="button" class="btn secondary">下载完整备份</button><label class="btn danger subtle">恢复备份<input id="restoreBackupInput" type="file" accept=".zip" hidden></label></div></div></article>
             <article class="panel setting-card" data-admin><div class="setting-icon">演示</div><div><h3>演示数据</h3><p>只清除初始演示记录，不影响正式数据。</p><button id="deleteDemoBtn" class="btn danger subtle">清除演示数据</button></div></article>
@@ -295,22 +303,6 @@
     </form>
   </dialog>
 
-  <dialog id="batchActionDialog" class="modal small-modal">
-    <form id="batchActionForm" class="modal-card">
-      <header><div><p class="eyebrow">批量修改</p><h3>修改所选发票</h3></div><button type="button" class="dialog-close" data-close="batchActionDialog">×</button></header>
-      <p id="batchActionSummary" class="batch-action-summary"></p>
-      <label class="full-label"><span>修改项目</span><select id="batchActionType"><option value="funding_source">资金来源（核心）</option><option value="category">费用分类</option><option value="status">报销状态</option></select></label>
-      <label id="batchSourceActionWrap" class="full-label"><span>目标资金来源</span><select id="batchActionSource"></select><small>选项与单张发票录入界面完全一致，可在“分类与资金来源”中维护。</small></label>
-      <label id="batchCategoryActionWrap" class="full-label"><span>目标分类</span><select id="batchActionCategory"></select></label>
-      <div id="batchStatusActionWrap" class="hidden">
-        <label class="full-label"><span>目标状态</span><select id="batchActionStatus"><option value="pending">未报销</option><option value="partial">部分报销</option><option value="reimbursed">已报销</option></select></label>
-        <label id="batchRatioWrap" class="full-label hidden"><span>统一报销比例 <b id="batchRatioValue">50%</b></span><input id="batchActionRatio" type="range" min="1" max="99" value="50"></label>
-        <label class="full-label"><span>报销日期</span><input id="batchActionDate" type="date"></label>
-      </div>
-      <footer><button type="button" class="btn secondary" data-close="batchActionDialog">取消</button><button class="btn primary">应用到所选发票</button></footer>
-    </form>
-  </dialog>
-
   <dialog id="pdfExportDialog" class="modal small-modal">
     <form id="pdfExportForm" class="modal-card">
       <header><div><p class="eyebrow">原文件导出</p><h3>批量导出 PDF</h3></div><button type="button" class="dialog-close" data-close="pdfExportDialog">×</button></header>
@@ -389,7 +381,8 @@
           </div>
           <div class="form-grid two"><label><span>系统名称</span><input id="teamNameSetting"></label><label><span>主题强调色</span><input id="accentColor" type="color" value="#27d3ff"></label></div>
           <label class="full-label"><span>背景遮罩强度 <b id="overlayValue">82%</b></span><input id="backgroundOverlay" type="range" min="20" max="98" value="82"></label>
-          <label class="full-label"><span>登录框及顶部/左侧导航透明度 <b id="loginOpacityValue">78%</b></span><input id="loginPanelOpacity" type="range" min="35" max="100" value="78"><small>仅背景透明，文字与按钮保持高对比度。</small></label>
+          <label class="full-label"><span>登录框背景不透明度 <b id="loginOpacityValue">78%</b></span><input id="loginPanelOpacity" type="range" min="35" max="100" value="78"><small>仅背景变化，文字与按钮保持高对比度。</small></label>
+          <div class="form-grid two"><label><span>左侧导航透明度 <b id="sidebarTransparencyValue">22%</b></span><input id="sidebarTransparency" type="range" min="0" max="100" value="22"><small>0% 不透明，100% 全透明。</small></label><label><span>顶部横框透明度 <b id="topbarTransparencyValue">22%</b></span><input id="topbarTransparency" type="range" min="0" max="100" value="22"><small>可与左侧导航单独设置。</small></label></div>
           <div class="form-grid two"><label class="switch-row"><span><b>登录背景随机</b><small>从轮播素材随机开始</small></span><input id="loginRandomEnabled" type="checkbox"></label><label class="switch-row"><span><b>全局背景随机</b><small>登录后也随机展示已配置背景</small></span><input id="globalBackgroundRandom" type="checkbox"></label></div>
           <div class="background-preset-row"><span>背景清晰度预设</span><button type="button" data-overlay-preset="35">非常明显</button><button type="button" data-overlay-preset="50">明显</button><button type="button" data-overlay-preset="68">均衡</button><button type="button" data-overlay-preset="82">清晰文字</button><button type="button" data-overlay-preset="92">弱背景</button></div>
           <div class="background-control"><div id="backgroundPreview" class="media-preview empty">当前使用默认赛车背景</div><div><label class="btn secondary media-upload-btn">上传自定义背景<input id="backgroundFile" type="file" accept="image/*,video/mp4,video/webm,.gif,.m4v" hidden></label><button id="clearBackgroundBtn" type="button" class="btn danger subtle">恢复默认背景</button><small>支持图片、GIF、MP4 和 WebM，文件保存在本机。</small></div></div>
@@ -399,6 +392,13 @@
           <div class="appearance-heading"><div><b>登录界面轮播</b><small>管理员可调整顺序、标题、停留时间和启停状态</small></div><label class="mini-switch"><input id="loginSlideshowEnabled" type="checkbox" checked><span>启用轮播</span></label></div>
           <div class="carousel-toolbar"><label>切换效果<select id="loginTransition"><option value="fade">淡入淡出</option><option value="slide">左右滑动</option></select></label><label class="btn secondary media-upload-btn">添加图片或视频<input id="loginMediaFiles" type="file" accept="image/*,video/mp4,video/webm,.gif,.m4v" multiple hidden></label></div>
           <div id="loginSlideEditor" class="login-slide-editor"><div class="empty-state">尚未添加登录轮播媒体</div></div>
+        </section>
+
+        <section class="appearance-pane login-info-editor-pane">
+          <div class="appearance-heading"><div><b>登录页赛季信息</b><small>在登录框右侧依次滚动；当前赛季单独配置</small></div><button id="addLoginInfoBtn" type="button" class="btn secondary">＋ 自定义内容</button></div>
+          <label class="full-label"><span>每条停留时间 / 秒</span><input id="loginInfoInterval" type="number" min="3" max="60" value="7"></label>
+          <div id="loginInfoEditor" class="login-info-editor"></div>
+          <p class="export-quality-note">创作者与鸣谢、版本更新、队训和造车理念为每赛季必备内容，不可隐藏或删除；记款金额按当前赛季自动计算。</p>
         </section>
 
         <section class="appearance-pane">
@@ -437,6 +437,17 @@
 
   <dialog id="syncDialog" class="modal small-modal"><form id="syncForm" class="modal-card"><header><div><p class="eyebrow">云端同步</p><h3>云端自动同步</h3></div><button type="button" class="dialog-close" data-close="syncDialog">×</button></header><label class="switch-row"><span><b>启用自动同步</b><small>断网时写入本地队列，联网后自动双向同步</small></span><input id="syncEnabled" type="checkbox"></label><label class="full-label"><span>云端服务器地址</span><input id="remoteUrl" type="url" placeholder="https://finance.example.com"></label><label class="full-label"><span>同步密钥</span><input id="syncSecret" type="password" placeholder="已配置时可留空"><small>必须与 Linux 云端部署配置一致</small></label><div id="syncDialogStatus" class="sync-dialog-status"></div><footer><button id="syncNowBtn" type="button" class="btn secondary">立即同步</button><button class="btn primary">保存配置</button></footer></form></dialog>
 
+  <dialog id="integrationsDialog" class="modal large-modal">
+    <div class="modal-card">
+      <header><div><p class="eyebrow">扩展接口</p><h3>AI 接插件与 NAS 预留</h3></div><button type="button" class="dialog-close" data-close="integrationsDialog">×</button></header>
+      <div class="integration-layout">
+        <section class="appearance-pane"><div class="appearance-heading"><div><b>AI 接插件</b><small>本地优先；暂不参与当前离线 OCR</small></div><button id="addAiConnectorBtn" class="btn secondary" type="button">＋ 添加接口</button></div><div id="aiConnectorList" class="ai-connector-list"></div><button id="saveAiConnectorsBtn" class="btn primary" type="button">保存 AI 配置</button></section>
+        <section class="appearance-pane"><div class="appearance-heading"><div><b>NAS 连接预留</b><small>仅保存配置与测试连接，不同步任何文件</small></div></div><form id="nasForm"><label class="switch-row"><span><b>启用配置</b><small>不会自动上传</small></span><input id="nasEnabled" type="checkbox"></label><div class="form-grid two"><label><span>方式</span><select id="nasProtocol"><option value="local">本机/映射盘</option><option value="smb">Windows SMB 共享</option><option value="webdav">WebDAV</option></select></label><label><span>账号</span><input id="nasUsername" autocomplete="off"></label></div><label class="full-label"><span>目录或地址</span><input id="nasLocation" placeholder="例如：Z:\\燕翔车队 或 https://nas.example/dav"></label><label class="full-label"><span>密码</span><input id="nasPassword" type="password" autocomplete="new-password" placeholder="已配置时留空即可保留"></label><div id="nasStatus" class="sync-dialog-status">尚未测试</div><div class="inline-actions"><button id="testNasBtn" type="button" class="btn secondary">测试连接</button><button class="btn primary">保存 NAS 配置</button></div></form></section>
+      </div>
+      <footer><button type="button" class="btn primary" data-close="integrationsDialog">完成</button></footer>
+    </div>
+  </dialog>
+
   <dialog id="seasonManagerDialog" class="modal large-modal">
     <div class="modal-card">
       <header><div><p class="eyebrow">管理员功能</p><h3>赛季与长期组别</h3></div><button type="button" class="dialog-close" data-close="seasonManagerDialog">×</button></header>
@@ -474,7 +485,7 @@
   <dialog id="updateDialog" class="modal">
     <div class="modal-card">
       <header><div><p class="eyebrow">版本管理</p><h3>更新日志与自动更新</h3></div><button type="button" class="dialog-close" data-close="updateDialog">×</button></header>
-      <div class="update-current"><div><span>当前版本</span><strong id="updateCurrentVersion">V2.3.3</strong></div><label class="mini-switch"><input id="autoUpdateCheck" type="checkbox" checked><span>启动后自动检查</span></label></div>
+      <div class="update-current"><div><span>当前版本</span><strong id="updateCurrentVersion">V2.3.4</strong></div><label class="mini-switch"><input id="autoUpdateCheck" type="checkbox" checked><span>启动后自动检查</span></label></div>
       <label class="update-mode-choice"><span>更新方式</span><select id="updateInstallMode"><option value="auto">自动完整备份并更新（推荐）</option><option value="manual">手动下载补丁包并覆盖</option></select><small id="updateModeHint">安装前自动备份全部赛季、人员、组别、账号、发票与附件，再重启更新。</small></label>
       <div class="update-actions"><button id="checkUpdateBtn" type="button" class="btn secondary">检查 GitHub 新版本</button><a id="updateReleaseLink" class="btn secondary hidden" target="_blank" rel="noopener">查看发布页面</a><button id="installUpdateBtn" type="button" class="btn primary hidden">一键更新到最新版</button></div>
       <div id="updateStatus" class="update-status">正在读取本地更新日志……</div>
@@ -549,6 +560,6 @@
       <small id="loadingDetail">任务正在本机运行，请勿关闭软件</small>
     </div>
   </div>
-  <script src="/static/app.js?v=2.3.3"></script>
+  <script src="/static/app.js?v=2.3.4"></script>
 </body>
 </html>

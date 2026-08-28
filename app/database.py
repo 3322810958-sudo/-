@@ -494,8 +494,9 @@ def set_setting(conn: sqlite3.Connection, key: str, value: str, *, sync: bool = 
     if sync and key in {
         "team_name", "background_image", "background_media_id", "background_media_kind",
         "background_overlay", "accent_color", "login_slideshow_enabled", "login_slides",
-        "login_transition", "loading_cars", "login_panel_opacity", "login_random_enabled",
+        "login_transition", "loading_cars", "login_panel_opacity", "sidebar_transparency", "topbar_transparency", "login_random_enabled",
         "global_background_random", "classification_rules", "invoice_defaults", "current_season_id",
+        "login_info_panels", "ai_connectors", "nas_config",
     }:
         enqueue_sync_event(conn, "app_settings", key, "upsert", {
             "key": key, "value": value, "updated_at": now, "version": version, "device_id": device_id
@@ -873,6 +874,11 @@ def seed_defaults(conn: sqlite3.Connection) -> None:
         "login_transition": "fade",
         "loading_cars": "[]",
         "login_panel_opacity": "0.78",
+        "sidebar_transparency": "0.22",
+        "topbar_transparency": "0.22",
+        "login_info_panels": "{}",
+        "ai_connectors": "[]",
+        "nas_config": "{}",
         "login_random_enabled": "0",
         "global_background_random": "0",
         "ocr_confidence_threshold": "0.80",

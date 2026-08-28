@@ -7,11 +7,13 @@ const state = {
   resizeTimer: null, publicSettings: {}, loginSlideTimer: null, loginSlideIndex: 0,
   loginActiveLayer: "A", appearanceSlides: [], appearanceBackground: null,
   appearanceLoadingCars: [], selectedInvoiceIds: new Set(),
+  batchEditIds: [], loginInfoItems: [], loginInfoIndex: 0, loginInfoTimer: null,
+  aiConnectors: [], nasConfig: {},
   wallpapers: [], classificationRules: [], decisionResolve: null,
   shortcuts: {}, shortcutDraft: {},
   loadingTimer: null, loadingProgress: 0, loadingToken: 0, updateRelease: null,
   currentInvoicePreview: null, batchPreviewFiles: [], attachmentViewerZoom: 1,
-  version: "2.3.3", updateJobId: "", qualityIssues: [], openSourceReferences: [],
+  version: "2.3.4", updateJobId: "", qualityIssues: [], openSourceReferences: [],
   supportingAttachments: [], batchReviewIds: [], userPreferences: {}, personalAudio: [], audioIndex: -1,
   draftHistory: [], draftHistoryIndex: -1, draftHistoryTimer: null, activeDraftForm: null,
   lastOcrResult: null,
@@ -410,6 +412,7 @@ function showApp() {
   $("loginView").classList.add("hidden");
   $("appShell").classList.remove("hidden");
   stopLoginSlideshow();
+  clearInterval(state.loginInfoTimer); state.loginInfoTimer = null;
 }
 
 function setAccent(hex) {
@@ -466,15 +469,36 @@ function startLoginSlideshow() {
   showLoginSlide(state.loginSlideIndex || 0, true);
 }
 
+function showLoginInfo(index = 0) {
+  const info = state.publicSettings?.login_info || {};
+  const items = (info.items || []).filter((item) => item.visible !== false);
+  state.loginInfoItems = items;
+  if (!items.length) { $("loginInfoTicker").classList.add("hidden"); return; }
+  $("loginInfoTicker").classList.remove("hidden");
+  state.loginInfoIndex = ((index % items.length) + items.length) % items.length;
+  const item = items[state.loginInfoIndex];
+  $("loginInfoSeason").textContent = info.season_name || "当前赛季";
+  $("loginInfoCounter").textContent = `${state.loginInfoIndex + 1} / ${items.length}`;
+  $("loginInfoCard").innerHTML = `<p>${escapeHtml(item.title || "赛季信息")}</p><h2>${escapeHtml(item.content || "—").replace(/\n/g, "<br>")}</h2><div>${item.type === "total" ? "已录入并保存在本机数据库" : "燕翔车队 · 经费管理"}</div>`;
+  $("loginInfoDots").innerHTML = items.map((_, itemIndex) => `<button type="button" data-login-info-index="${itemIndex}" class="${itemIndex === state.loginInfoIndex ? "active" : ""}" aria-label="查看第 ${itemIndex + 1} 条"></button>`).join("");
+}
+
+function startLoginInfo() {
+  clearInterval(state.loginInfoTimer); state.loginInfoTimer = null;
+  showLoginInfo(0);
+  const seconds = Math.max(3, Math.min(60, Number(state.publicSettings?.login_info?.interval || 7)));
+  if (state.loginInfoItems.length > 1) state.loginInfoTimer = setInterval(() => showLoginInfo(state.loginInfoIndex + 1), seconds * 1000);
+}
+
 function applyPublicAppearance(settings = {}) {
   state.publicSettings = settings;
   setAccent(settings.accent_color || "#27d3ff");
   const teamName = String(settings.team_name || "燕翔车队").replace(/\s*Racing Team\s*/i, "").trim() || "燕翔车队";
   $("loginTeamName").textContent = teamName;
-  const chromeOpacity = String(Number(settings.login_panel_opacity || .78));
-  document.documentElement.style.setProperty("--login-panel-opacity", chromeOpacity);
-  document.documentElement.style.setProperty("--chrome-opacity", chromeOpacity);
-  if (!$("loginView").classList.contains("hidden")) startLoginSlideshow();
+  document.documentElement.style.setProperty("--login-panel-opacity", String(Number(settings.login_panel_opacity ?? .78)));
+  document.documentElement.style.setProperty("--sidebar-opacity", String(1 - Number(settings.sidebar_transparency ?? .22)));
+  document.documentElement.style.setProperty("--topbar-opacity", String(1 - Number(settings.topbar_transparency ?? .22)));
+  if (!$("loginView").classList.contains("hidden")) { startLoginSlideshow(); startLoginInfo(); }
 }
 
 async function loadPublicAppearance() {
@@ -497,7 +521,7 @@ function applyTheme() {
     if (video.getAttribute("src") !== mediaUrl) video.src = mediaUrl;
     video.classList.add("active"); video.play().catch(() => {});
   } else { video.pause(); video.removeAttribute("src"); video.load(); video.classList.remove("active"); }
-  document.title = `${settings.team_name || "燕翔车队"} · 经费管理系统 V${state.version || "2.3.3"}`;
+  document.title = `${settings.team_name || "燕翔车队"} · 经费管理系统 V${state.version || "2.3.4"}`;
 }
 
 function applyAccess() {
@@ -550,7 +574,7 @@ async function loadBootstrap() {
   state.settings = data.settings || {};
   state.dashboard = data.dashboard;
   state.sync = data.sync || {};
-  state.version = data.version || "2.3.3";
+  state.version = data.version || "2.3.4";
   state.qualityIssues = data.quality_issues || [];
   state.openSourceReferences = data.open_source_references || [];
   state.userPreferences = data.user_preferences || {};
@@ -1100,6 +1124,7 @@ function selectedSplitIds() { return $$("#splitMemberPicker input[type=checkbox]
 function selectedWeights() { return Object.fromEntries($$("#splitMemberPicker .split-weight:not(:disabled)").map((input) => [input.dataset.memberId, Number(input.value || 1)])); }
 
 function resetInvoiceForm() {
+  state.batchEditIds = []; $("invoiceDialog").classList.remove("batch-edit-mode"); $("saveInvoiceBtn").textContent = "保存发票记录";
   $("invoiceForm").reset(); $("invoiceId").value = ""; $("invoiceVersion").value = ""; $("attachmentId").value = "";
   $("ocrText").value = ""; $("ocrConfidence").value = "0"; $("ocrStatus").value = "manual"; $("invoiceDate").value = nowDate();
   $("invoiceTax").value = "0"; $("reimbursedAmount").value = "0"; $("invoiceProduct").value = "其他";
@@ -1265,10 +1290,20 @@ function applyOcr(result) {
 async function saveInvoiceForm(event) {
   event.preventDefault();
   if (!selectedSplitIds().length) return toast("请至少选择一名分摊成员", "error");
-  loading(true, "正在保存发票记录");
+  const batchIds = [...state.batchEditIds];
+  loading(true, batchIds.length ? `正在统一修改 ${batchIds.length} 张发票` : "正在保存发票记录", batchIds.length ? 5 : null, batchIds.length ? "系统将保留每张发票原附件和提交人" : "", Boolean(batchIds.length));
   try {
-    const id = $("invoiceId").value; await api(id ? `/api/invoices/${encodeURIComponent(id)}` : "/api/invoices", { method: id ? "PUT" : "POST", body: invoiceFormPayload() });
-    $("invoiceDialog").close(); toast(id ? "发票记录已更新" : "发票记录已新增"); await refreshCurrentView(true);
+    const id = $("invoiceId").value;
+    if (batchIds.length) {
+      setLoadingProgress(28, "正在建立回溯版本");
+      const result = await api("/api/invoices/batch-action", { method: "POST", body: { ...invoiceFormPayload(), ids: batchIds, action: "full_update", attachment_id: "" } });
+      setLoadingProgress(92, "正在刷新发票台账");
+      $("invoiceDialog").close(); state.batchEditIds = []; clearInvoiceSelection(false);
+      toast(`已将相同设置保存到 ${result.changed_count} 张发票`, "success", 5500); await loadInvoices();
+    } else {
+      await api(id ? `/api/invoices/${encodeURIComponent(id)}` : "/api/invoices", { method: id ? "PUT" : "POST", body: invoiceFormPayload() });
+      $("invoiceDialog").close(); toast(id ? "发票记录已更新" : "发票记录已新增"); await refreshCurrentView(true);
+    }
   } catch (error) { toast(error.message, "error", 5000); }
   finally { loading(false); }
 }
@@ -1280,44 +1315,13 @@ async function deleteInvoiceRecord(id) {
   catch (error) { toast(error.message, "error"); }
 }
 
-function updateBatchActionVisibility() {
-  const action = $("batchActionType").value;
-  const statusMode = action === "status";
-  $("batchSourceActionWrap").classList.toggle("hidden", action !== "funding_source");
-  $("batchCategoryActionWrap").classList.toggle("hidden", action !== "category");
-  $("batchStatusActionWrap").classList.toggle("hidden", !statusMode);
-  const partial = statusMode && $("batchActionStatus").value === "partial";
-  $("batchRatioWrap").classList.toggle("hidden", !partial);
-  $("batchRatioValue").textContent = `${$("batchActionRatio").value}%`;
-}
-
 function openBatchActionDialog() {
   const selected = selectedInvoices(); if (!selected.length) return toast("请先勾选发票", "error");
-  const categoryOptions = state.categories.filter((item) => item.active && !item.deleted_at).map((item) => `<option value="${escapeHtml(item.id)}">${escapeHtml(item.name)}</option>`).join("");
-  const sourceOptions = state.fundingSources.filter((item) => item.active && !item.deleted_at).map((item) => `<option value="${escapeHtml(item.id)}">${escapeHtml(item.name)}</option>`).join("");
-  $("batchActionCategory").innerHTML = `<option value="">未分类</option>${categoryOptions}`;
-  $("batchActionSource").innerHTML = `<option value="">未选择（清空资金来源）</option>${sourceOptions}`;
-  $("batchActionType").value = "funding_source"; $("batchActionStatus").value = "pending"; $("batchActionRatio").value = "50"; $("batchActionDate").value = nowDate();
-  $("batchActionSummary").textContent = `将修改 ${selected.length} 张发票，合计 ${money(selected.reduce((sum, item) => sum + Number(item.total_amount || 0), 0))}。修改前会自动建立回溯版本。`;
-  updateBatchActionVisibility(); $("batchActionDialog").showModal();
-}
-
-async function submitBatchAction(event) {
-  event.preventDefault(); const ids = [...state.selectedInvoiceIds]; if (!ids.length) return;
-  const action = $("batchActionType").value;
-  let body;
-  if (action === "category") body = { ids, action, category_id: $("batchActionCategory").value };
-  else if (action === "funding_source") body = { ids, action, funding_source_id: $("batchActionSource").value };
-  else body = { ids, action, status: $("batchActionStatus").value, reimbursement_ratio: Number($("batchActionRatio").value), reimbursement_date: $("batchActionDate").value };
-  loading(true, "正在批量修改发票", 5, `共 ${ids.length} 张发票`, false);
-  try {
-    setLoadingProgress(35, "正在建立回溯版本");
-    const result = await api("/api/invoices/batch-action", { method: "POST", body });
-    setLoadingProgress(92, "正在刷新发票台账");
-    $("batchActionDialog").close(); clearInvoiceSelection(false); await loadInvoices();
-    toast(`批量修改完成：成功 ${result.changed_count} 张${result.skipped_count ? `，跳过 ${result.skipped_count} 张` : ""}`, "success", 5000);
-  } catch (error) { toast(error.message, "error", 6000); }
-  finally { loading(false); }
+  resetInvoiceForm(); state.batchEditIds = selected.map((item) => item.id); $("invoiceDialog").classList.add("batch-edit-mode");
+  const total = selected.reduce((sum, item) => sum + Number(item.total_amount || 0), 0);
+  $("invoiceMetadata").innerHTML = `<span><b>批量修改</b>${selected.length} 张发票</span><span><b>原合计</b>${escapeHtml(money(total))}</span><span><b>保存规则</b>当前界面全部设置统一应用</span>`;
+  $("invoiceMetadata").classList.remove("hidden"); $("invoiceDialogTitle").textContent = `批量修改 ${selected.length} 张发票`;
+  $("saveInvoiceBtn").textContent = `保存到 ${selected.length} 张发票`; $("invoiceDialog").showModal();
 }
 
 async function deleteSelectedInvoices() {
@@ -1696,16 +1700,34 @@ function renderLoadingCarEditor() {
   }).join("");
 }
 
+function renderLoginInfoEditor() {
+  $("loginInfoEditor").innerHTML = (state.loginInfoItems || []).map((item, index) => `<article class="login-info-edit-item" data-login-info-edit="${index}">
+    <div class="login-info-edit-head"><b>${escapeHtml(item.required ? "赛季必备" : (item.type === "total" ? "自动金额" : "自定义"))}</b><div><button type="button" data-login-info-move="up" data-index="${index}">↑</button><button type="button" data-login-info-move="down" data-index="${index}">↓</button>${item.required || item.type === "total" ? "" : `<button type="button" data-login-info-remove="${index}">×</button>`}</div></div>
+    <label><span>标题</span><input data-login-info-title="${index}" maxlength="100" value="${escapeHtml(item.title || "")}" ${item.type === "total" ? "readonly" : ""}></label>
+    <label><span>内容</span><textarea data-login-info-content="${index}" rows="2" maxlength="3000" ${item.type === "total" ? "readonly" : ""}>${escapeHtml(item.content || "")}</textarea></label>
+    <label class="mini-switch"><input data-login-info-visible="${index}" type="checkbox" ${item.visible !== false ? "checked" : ""} ${item.required ? "disabled" : ""}><span>${item.required ? "必须显示" : "显示此项"}</span></label>
+  </article>`).join("");
+}
+
+function addLoginInfoItem() {
+  state.loginInfoItems.push({ id: `custom_${Date.now()}`, type: "custom", title: "自定义信息", content: "", visible: true, required: false });
+  renderLoginInfoEditor();
+}
+
 function openAppearance() {
   $("appearanceForm").reset(); applyDisplayMode(savedDisplayMode(), false); $("teamNameSetting").value = state.settings.team_name || "燕翔车队 Racing Team";
   $("backgroundOverlay").value = Math.round(Number(state.settings.background_overlay || .82) * 100); $("overlayValue").textContent = `${$("backgroundOverlay").value}%`;
   $("loginPanelOpacity").value = Math.round(Number(state.settings.login_panel_opacity || .78) * 100); $("loginOpacityValue").textContent = `${$("loginPanelOpacity").value}%`;
+  $("sidebarTransparency").value = Math.round(Number(state.settings.sidebar_transparency ?? .22) * 100); $("sidebarTransparencyValue").textContent = `${$("sidebarTransparency").value}%`;
+  $("topbarTransparency").value = Math.round(Number(state.settings.topbar_transparency ?? .22) * 100); $("topbarTransparencyValue").textContent = `${$("topbarTransparency").value}%`;
   $("loginRandomEnabled").checked = Boolean(state.settings.login_random_enabled); $("globalBackgroundRandom").checked = Boolean(state.settings.global_background_random);
   $("accentColor").value = state.settings.accent_color || "#27d3ff";
   $("loginSlideshowEnabled").checked = Boolean(state.settings.login_slideshow_enabled);
   $("loginTransition").value = state.settings.login_transition || "fade";
   state.appearanceSlides = (state.settings.login_slides || []).map((slide) => ({ ...slide }));
   state.appearanceLoadingCars = (state.settings.loading_cars || DEFAULT_LOADING_CARS).map((car) => ({ ...car }));
+  state.loginInfoItems = (state.settings.login_info?.items || []).map((item) => ({ ...item }));
+  $("loginInfoInterval").value = Number(state.settings.login_info?.interval || 7);
   state.appearanceBackground = state.settings.background_media_id ? {
     attachment_id: state.settings.background_media_id,
     kind: state.settings.background_media_kind || "image",
@@ -1713,7 +1735,7 @@ function openAppearance() {
     url: state.settings.background_media_url,
     private_url: state.settings.background_media_url,
   } : null;
-  renderBackgroundPreview(); renderLoginSlideEditor(); renderLoadingCarEditor(); $("appearanceDialog").showModal();
+  renderBackgroundPreview(); renderLoginSlideEditor(); renderLoadingCarEditor(); renderLoginInfoEditor(); $("appearanceDialog").showModal();
   if (!state.wallpapers.length) scanWallpapers(false);
 }
 
@@ -1788,6 +1810,8 @@ async function saveAppearance(event) {
       background_media_id: state.appearanceBackground?.attachment_id || "",
       background_overlay: Number($("backgroundOverlay").value) / 100,
       login_panel_opacity: Number($("loginPanelOpacity").value) / 100,
+      sidebar_transparency: Number($("sidebarTransparency").value) / 100,
+      topbar_transparency: Number($("topbarTransparency").value) / 100,
       login_random_enabled: $("loginRandomEnabled").checked,
       global_background_random: $("globalBackgroundRandom").checked,
       accent_color: $("accentColor").value,
@@ -1796,10 +1820,56 @@ async function saveAppearance(event) {
       login_slides: state.appearanceSlides.map((slide) => ({ id: slide.id, attachment_id: slide.attachment_id, title: slide.title, duration: Number(slide.duration || 8) })),
       loading_cars: state.appearanceLoadingCars.filter((car) => car.attachment_id).map((car) => ({ id: car.id, attachment_id: car.attachment_id, title: car.title })),
     } });
-    state.settings = result.settings; state.publicSettings = result.settings; applyTheme(); applyPublicAppearance(result.settings); $("appearanceDialog").close(); toast("系统界面与登录轮播已更新");
+    const infoResult = await api("/api/admin/login-info", { method: "PUT", body: { interval: Number($("loginInfoInterval").value || 7), items: state.loginInfoItems.map((item) => ({ id: item.id, type: item.type, title: item.title, content: item.content, visible: item.required ? true : item.visible !== false })) } });
+    state.settings = infoResult.settings || result.settings; state.publicSettings = state.settings; applyTheme(); applyPublicAppearance(state.settings); $("appearanceDialog").close(); toast("系统界面、透明度与登录赛季信息已更新");
   } catch (error) { toast(error.message, "error"); }
   finally { loading(false); }
 }
+
+function renderAiConnectors() {
+  $("aiConnectorList").innerHTML = state.aiConnectors.map((item, index) => `<article class="ai-connector-card" data-ai-index="${index}">
+    <div class="ai-connector-head"><b>${escapeHtml(item.name || `AI 接口 ${index + 1}`)}</b><button type="button" data-ai-remove="${index}" class="row-action delete">×</button></div>
+    <div class="form-grid three"><label><span>名称</span><input data-ai-field="name" value="${escapeHtml(item.name || "")}" maxlength="100"></label><label><span>类型</span><select data-ai-field="kind"><option value="ollama" ${item.kind === "ollama" ? "selected" : ""}>Ollama 本地</option><option value="localai" ${item.kind === "localai" ? "selected" : ""}>LocalAI 本地</option><option value="openai_compatible" ${item.kind === "openai_compatible" ? "selected" : ""}>OpenAI 兼容</option><option value="custom" ${item.kind === "custom" ? "selected" : ""}>自定义兼容接口</option></select></label><label><span>来源</span><select data-ai-field="scope"><option value="local" ${item.scope === "local" ? "selected" : ""}>本地部署</option><option value="domestic" ${item.scope === "domestic" ? "selected" : ""}>中国国内</option><option value="foreign" ${item.scope === "foreign" ? "selected" : ""}>国外服务</option></select></label></div>
+    <div class="form-grid three"><label><span>服务地址</span><input data-ai-field="base_url" value="${escapeHtml(item.base_url || "")}" placeholder="http://127.0.0.1:11434"></label><label><span>模型</span><input data-ai-field="model" value="${escapeHtml(item.model || "")}" placeholder="可留空"></label><label><span>优先级</span><input data-ai-field="priority" type="number" min="1" max="999" value="${Number(item.priority || index + 1)}"></label></div>
+    <div class="form-grid three"><label><span>API 密钥</span><input data-ai-field="api_key" type="password" autocomplete="new-password" placeholder="${item.has_secret ? "已本机加密，留空保留" : "本地服务通常可留空"}"></label><label class="switch-row"><span><b>启用</b><small>仅启用配置</small></span><input data-ai-field="enabled" type="checkbox" ${item.enabled ? "checked" : ""}></label><div class="inline-actions"><button type="button" class="btn secondary" data-ai-test="${index}">测试连接</button></div></div><div class="sync-dialog-status" data-ai-status="${index}">尚未测试 · 不参与当前 OCR</div>
+  </article>`).join("") || `<div class="empty-state">尚未配置 AI 接插件。可先添加本机 Ollama 或 LocalAI。</div>`;
+}
+
+function aiConnectorDrafts() {
+  return $$(".ai-connector-card").map((card) => {
+    const index = Number(card.dataset.aiIndex), original = state.aiConnectors[index] || {};
+    const value = (name) => card.querySelector(`[data-ai-field="${name}"]`);
+    return { ...original, id: original.id || `ai_${Date.now()}_${index}`, name: value("name").value, kind: value("kind").value, scope: value("scope").value, base_url: value("base_url").value, model: value("model").value, priority: Number(value("priority").value || index + 1), api_key: value("api_key").value, enabled: value("enabled").checked };
+  });
+}
+
+async function openIntegrations() {
+  try {
+    const result = await api("/api/admin/integrations"); state.aiConnectors = result.ai || []; state.nasConfig = result.nas || {}; renderAiConnectors();
+    $("nasEnabled").checked = Boolean(state.nasConfig.enabled); $("nasProtocol").value = state.nasConfig.protocol || "local"; $("nasLocation").value = state.nasConfig.location || ""; $("nasUsername").value = state.nasConfig.username || ""; $("nasPassword").value = ""; $("nasPassword").placeholder = state.nasConfig.has_secret ? "已本机加密，留空保留" : "可留空"; $("nasStatus").textContent = result.notice || "尚未测试"; $("integrationsDialog").showModal();
+  } catch (error) { toast(error.message, "error"); }
+}
+
+function addAiConnector() {
+  state.aiConnectors = aiConnectorDrafts();
+  state.aiConnectors.push({ id: `ai_${Date.now()}`, name: "本地 Ollama", kind: "ollama", scope: "local", base_url: "http://127.0.0.1:11434", model: "", enabled: false, priority: state.aiConnectors.length + 1, has_secret: false }); renderAiConnectors();
+}
+
+async function saveAiConnectors() {
+  try { const result = await api("/api/admin/integrations/ai", { method: "PUT", body: { items: aiConnectorDrafts() } }); state.aiConnectors = result.ai || []; renderAiConnectors(); toast("AI 接插件配置已保存；离线 OCR 保持独立"); }
+  catch (error) { toast(error.message, "error", 6000); }
+}
+
+async function testAiConnector(index) {
+  const items = aiConnectorDrafts(), item = items[index]; if (!item) return;
+  const status = document.querySelector(`[data-ai-status="${index}"]`); status.textContent = "正在测试连接……";
+  try { const result = await api("/api/admin/integrations/ai/test", { method: "POST", body: { connector: item } }); status.textContent = result.message; }
+  catch (error) { status.textContent = error.message; }
+}
+
+function nasPayload() { return { enabled: $("nasEnabled").checked, protocol: $("nasProtocol").value, location: $("nasLocation").value, username: $("nasUsername").value, password: $("nasPassword").value }; }
+async function saveNas(event) { event.preventDefault(); try { const result = await api("/api/admin/integrations/nas", { method: "PUT", body: nasPayload() }); state.nasConfig = result.nas || {}; $("nasPassword").value = ""; $("nasPassword").placeholder = state.nasConfig.has_secret ? "已本机加密，留空保留" : "可留空"; $("nasStatus").textContent = "配置已保存；不会自动同步"; toast("NAS 预留配置已保存"); } catch (error) { $("nasStatus").textContent = error.message; } }
+async function testNas() { $("nasStatus").textContent = "正在测试连接……"; try { const result = await api("/api/admin/integrations/nas/test", { method: "POST", body: nasPayload() }); $("nasStatus").textContent = result.message; } catch (error) { $("nasStatus").textContent = error.message; } }
 
 function resetClassificationEditor() {
   $("classificationRuleForm").reset(); $("classificationRuleId").value = ""; $("classificationRulePriority").value = "100"; $("classificationRuleActive").checked = true; $("classificationRuleSaveBtn").textContent = "添加规则";
@@ -2162,6 +2232,7 @@ function setupEvents() {
     const visible = $("loginPassword").type === "text"; $("loginPassword").type = visible ? "password" : "text";
     $("toggleLoginPassword").textContent = visible ? "显示" : "隐藏"; $("toggleLoginPassword").setAttribute("aria-pressed", String(!visible)); $("toggleLoginPassword").setAttribute("aria-label", visible ? "显示密码" : "隐藏密码");
   });
+  $("loginInfoDots").addEventListener("click", (event) => { const button = event.target.closest("[data-login-info-index]"); if (button) showLoginInfo(Number(button.dataset.loginInfoIndex)); });
   $("forgotPasswordBtn").addEventListener("click", openRecovery); $("recoveryForm").addEventListener("submit", submitRecovery);
   $("openRecoverySettingsBtn").addEventListener("click", openRecoverySettings); $("recoverySettingsForm").addEventListener("submit", saveRecoverySettings);
   $("loginForm").addEventListener("submit", async (event) => {
@@ -2183,7 +2254,6 @@ function setupEvents() {
   $("exportCsvBtn").addEventListener("click", () => downloadCsv()); $("batchExportSelectedBtn").addEventListener("click", () => downloadCsv([...state.selectedInvoiceIds]));
   $("exportPdfBtn").addEventListener("click", openPdfExportDialog); $("pdfExportForm").addEventListener("submit", downloadPdfExport);
   $("batchClearSelectionBtn").addEventListener("click", () => clearInvoiceSelection()); $("batchEditSelectedBtn").addEventListener("click", openBatchActionDialog); $("batchDeleteSelectedBtn").addEventListener("click", deleteSelectedInvoices);
-  $("batchActionForm").addEventListener("submit", submitBatchAction); $("batchActionType").addEventListener("change", updateBatchActionVisibility); $("batchActionStatus").addEventListener("change", updateBatchActionVisibility); $("batchActionRatio").addEventListener("input", updateBatchActionVisibility);
   $("invoiceForm").addEventListener("submit", saveInvoiceForm); $("invoiceFile").addEventListener("change", (event) => uploadInvoiceFile(event.target.files[0])); $("runOcrBtn").addEventListener("click", runOcr);
   $("invoiceAttachmentPreview").addEventListener("click", (event) => { if (event.target.closest("[data-open-current-preview]")) openAttachmentViewer(state.currentInvoicePreview); });
   $("attachmentOpenOriginal").addEventListener("click", () => openLocalAttachment());
@@ -2237,8 +2307,9 @@ function setupEvents() {
     const opacity = String(Number($("loginPanelOpacity").value) / 100);
     $("loginOpacityValue").textContent = `${$("loginPanelOpacity").value}%`;
     document.documentElement.style.setProperty("--login-panel-opacity", opacity);
-    document.documentElement.style.setProperty("--chrome-opacity", opacity);
   });
+  $("sidebarTransparency").addEventListener("input", () => { $("sidebarTransparencyValue").textContent = `${$("sidebarTransparency").value}%`; document.documentElement.style.setProperty("--sidebar-opacity", String(1 - Number($("sidebarTransparency").value) / 100)); });
+  $("topbarTransparency").addEventListener("input", () => { $("topbarTransparencyValue").textContent = `${$("topbarTransparency").value}%`; document.documentElement.style.setProperty("--topbar-opacity", String(1 - Number($("topbarTransparency").value) / 100)); });
   $("appearanceDialog").addEventListener("click", (event) => { const preset = event.target.closest("[data-overlay-preset]"); if (!preset) return; $("backgroundOverlay").value = preset.dataset.overlayPreset; $("overlayValue").textContent = `${preset.dataset.overlayPreset}%`; document.documentElement.style.setProperty("--background-overlay", String(Number(preset.dataset.overlayPreset) / 100)); });
   $("backgroundFile").addEventListener("change", (event) => chooseBackgroundFile(event.target.files[0])); $("loginMediaFiles").addEventListener("change", (event) => addLoginMediaFiles(event.target.files));
   $("loadingCarFiles").addEventListener("change", (event) => addLoadingCarFiles(event.target.files)); $("resetLoadingCarsBtn").addEventListener("click", resetLoadingCars);
@@ -2247,9 +2318,14 @@ function setupEvents() {
   $("wallpaperGrid").addEventListener("click", (event) => { const background = event.target.closest("[data-wallpaper-background]"), login = event.target.closest("[data-wallpaper-login]"); if (background) importWallpaper(background.dataset.wallpaperBackground, "background"); if (login) importWallpaper(login.dataset.wallpaperLogin, "login"); });
   $("loginSlideEditor").addEventListener("input", (event) => { const titleIndex = event.target.dataset.slideTitle, durationIndex = event.target.dataset.slideDuration; if (titleIndex !== undefined && state.appearanceSlides[Number(titleIndex)]) state.appearanceSlides[Number(titleIndex)].title = event.target.value; if (durationIndex !== undefined && state.appearanceSlides[Number(durationIndex)]) state.appearanceSlides[Number(durationIndex)].duration = Math.max(2, Math.min(600, Number(event.target.value || 8))); });
   $("loginSlideEditor").addEventListener("click", (event) => { const remove = event.target.closest("[data-slide-remove]"), move = event.target.closest("[data-slide-move]"); if (remove) state.appearanceSlides.splice(Number(remove.dataset.slideRemove), 1); if (move) { const index = Number(move.dataset.index), target = move.dataset.slideMove === "up" ? index - 1 : index + 1; if (target >= 0 && target < state.appearanceSlides.length) [state.appearanceSlides[index], state.appearanceSlides[target]] = [state.appearanceSlides[target], state.appearanceSlides[index]]; } if (remove || move) renderLoginSlideEditor(); });
+  $("addLoginInfoBtn").addEventListener("click", addLoginInfoItem);
+  $("loginInfoEditor").addEventListener("input", (event) => { const title = event.target.dataset.loginInfoTitle, content = event.target.dataset.loginInfoContent, visible = event.target.dataset.loginInfoVisible; if (title !== undefined && state.loginInfoItems[Number(title)]) state.loginInfoItems[Number(title)].title = event.target.value; if (content !== undefined && state.loginInfoItems[Number(content)]) state.loginInfoItems[Number(content)].content = event.target.value; if (visible !== undefined && state.loginInfoItems[Number(visible)]) state.loginInfoItems[Number(visible)].visible = event.target.checked; });
+  $("loginInfoEditor").addEventListener("click", (event) => { const remove = event.target.closest("[data-login-info-remove]"), move = event.target.closest("[data-login-info-move]"); if (remove) state.loginInfoItems.splice(Number(remove.dataset.loginInfoRemove), 1); if (move) { const index = Number(move.dataset.index), target = move.dataset.loginInfoMove === "up" ? index - 1 : index + 1; if (target >= 0 && target < state.loginInfoItems.length) [state.loginInfoItems[index], state.loginInfoItems[target]] = [state.loginInfoItems[target], state.loginInfoItems[index]]; } if (remove || move) renderLoginInfoEditor(); });
   $("openClassificationBtn").addEventListener("click", openClassification); $("classificationRuleForm").addEventListener("submit", saveClassificationRule); $("newRuleBtn").addEventListener("click", resetClassificationEditor); $("resetRulesBtn").addEventListener("click", resetClassificationRules);
   $("classificationRuleList").addEventListener("click", (event) => { const edit = event.target.closest("[data-rule-edit]"), remove = event.target.closest("[data-rule-delete]"); if (edit) editClassificationRule(edit.dataset.ruleEdit); if (remove) deleteClassificationRule(remove.dataset.ruleDelete); });
   $("openSyncBtn").addEventListener("click", openSync); $("syncForm").addEventListener("submit", saveSync); $("syncNowBtn").addEventListener("click", syncNow);
+  $("openIntegrationsBtn").addEventListener("click", openIntegrations); $("addAiConnectorBtn").addEventListener("click", addAiConnector); $("saveAiConnectorsBtn").addEventListener("click", saveAiConnectors); $("nasForm").addEventListener("submit", saveNas); $("testNasBtn").addEventListener("click", testNas);
+  $("aiConnectorList").addEventListener("click", (event) => { const remove = event.target.closest("[data-ai-remove]"), test = event.target.closest("[data-ai-test]"); if (remove) { state.aiConnectors = aiConnectorDrafts(); state.aiConnectors.splice(Number(remove.dataset.aiRemove), 1); renderAiConnectors(); } if (test) testAiConnector(Number(test.dataset.aiTest)); });
   $("downloadBackupBtn").addEventListener("click", downloadBackup); $("restoreBackupInput").addEventListener("change", (event) => restoreBackup(event.target.files[0])); $("deleteDemoBtn").addEventListener("click", deleteDemo); $("clearCurrentSeasonBtn").addEventListener("click", clearCurrentSeasonData);
   $("openUpdateBtn").addEventListener("click", openUpdateDialog); $("checkUpdateBtn").addEventListener("click", () => checkForUpdates(true)); $("installUpdateBtn").addEventListener("click", installLatestUpdate);
   $("autoUpdateCheck").addEventListener("change", (event) => { try { localStorage.setItem(AUTO_UPDATE_STORAGE_KEY, event.target.checked ? "1" : "0"); } catch (_) { /* 当前会话仍可使用 */ } toast(event.target.checked ? "已启用每日自动检查更新" : "已关闭启动后自动检查"); });

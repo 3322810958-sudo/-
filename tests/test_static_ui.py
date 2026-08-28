@@ -55,7 +55,7 @@ def test_season_and_creator_interfaces_are_wired() -> None:
 def test_v222_previews_pdf_backup_and_defaults_are_wired() -> None:
     for element_id in (
         "invoiceAttachmentPreview", "batchFilePreview", "attachmentViewerDialog",
-        "batchActionSource", "batchSourceActionWrap", "clearCurrentSeasonBtn",
+        "invoiceDialog", "batchEditSelectedBtn", "clearCurrentSeasonBtn",
         "exportPdfBtn", "pdfExportDialog", "downloadBackupBtn", "invoiceDefaultsDialog",
     ):
         assert f'id="{element_id}"' in HTML
@@ -63,6 +63,18 @@ def test_v222_previews_pdf_backup_and_defaults_are_wired() -> None:
     assert "downloadBackup" in JS
     assert "openAttachmentViewer" in JS
     assert "showSaveFilePicker" in JS
+
+
+def test_v234_batch_login_info_transparency_and_integrations_are_wired() -> None:
+    for element_id in (
+        "loginInfoTicker", "loginInfoEditor", "sidebarTransparency", "topbarTransparency",
+        "openIntegrationsBtn", "integrationsDialog", "aiConnectorList", "nasForm",
+    ):
+        assert f'id="{element_id}"' in HTML
+    assert 'id="batchActionDialog"' not in HTML
+    assert "state.batchEditIds" in JS
+    assert 'action: "full_update"' in JS
+    assert "--sidebar-opacity" in CSS and "--topbar-opacity" in CSS
 
 
 def test_v224_update_modes_and_automatic_backup_are_wired() -> None:
