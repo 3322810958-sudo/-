@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#f4efe6">
+  <title>燕翔车队 · 赛季故事</title>
+  <link rel="icon" href="/static/assets/team-logo.png">
+  <link rel="stylesheet" href="/static/stories.css?v=2.3.5">
+</head>
+<body>
+  <header class="story-nav">
+    <a class="story-brand" href="/stories"><img src="/static/assets/team-logo.png" alt="燕翔车队"><span><b>燕翔车队</b><small>SEASON STORIES</small></span></a>
+    <nav><select id="storySeasonFilter" aria-label="筛选赛季"><option value="">全部赛季</option></select><button id="storyAdminBtn" class="admin-button" type="button">管理员登录后编辑</button><a href="/">返回经费系统</a></nav>
+  </header>
+  <main>
+    <section class="story-hero">
+      <p>YANXIANG RACING · ARCHIVE</p>
+      <h1>每一圈数据背后，<br>都有一段值得留下的故事。</h1>
+      <div><span>设计</span><span>制造</span><span>测试</span><span>赛场</span></div>
+    </section>
+    <section class="story-intro"><b id="storyCount">0 篇故事</b><p>记录车队成员、技术迭代与赛季记忆。</p></section>
+    <section id="storyGrid" class="story-grid"><div class="story-empty">正在读取赛季故事……</div></section>
+  </main>
+
+  <dialog id="storyDetailDialog" class="story-dialog detail-dialog"><article id="storyDetail"></article><button class="close-float" data-close="storyDetailDialog" aria-label="关闭">×</button></dialog>
+  <dialog id="storyEditorDialog" class="story-dialog editor-dialog">
+    <form id="storyEditorForm">
+      <header><div><small>STORY EDITOR</small><h2 id="storyEditorTitle">新增赛季故事</h2></div><button type="button" data-close="storyEditorDialog">×</button></header>
+      <input id="storyId" type="hidden">
+      <div class="editor-grid">
+        <label class="wide">标题<input id="storyTitle" maxlength="200" required></label>
+        <label>赛季<select id="storySeason" required></select></label>
+        <label>故事日期<input id="storyDate" type="date" required></label>
+        <label>作者<input id="storyAuthor" maxlength="100"></label>
+        <label>版式<select id="storyLayout"><option value="editorial">杂志推文</option><option value="timeline">时间线</option><option value="gallery">图片画廊</option><option value="technical">技术档案</option></select></label>
+        <label>主题颜色<input id="storyColor" type="color" value="#27d3ff"></label>
+        <label>排序<input id="storyOrder" type="number" min="-9999" max="9999" value="0"></label>
+        <label class="switch"><input id="storyPublished" type="checkbox"><span>公开发布</span></label>
+        <label class="wide">摘要<textarea id="storySummary" rows="3" maxlength="5000"></textarea></label>
+        <label class="wide">正文<textarea id="storyBody" rows="14" maxlength="500000" placeholder="可直接撰写，也可导入文件后自动提取文字。"></textarea></label>
+        <label class="file-drop wide"><input id="storyFiles" type="file" multiple><b>导入图片、视频、PDF、Word、PPT、表格或其他附件</b><span>自动提取可用文字与内嵌图片，源文件始终保留下载。</span></label>
+      </div>
+      <div id="storyAssetEditor" class="asset-editor"></div>
+      <footer><button id="storyDeleteBtn" type="button" class="danger hidden">删除故事</button><span></span><button type="button" data-close="storyEditorDialog">取消</button><button class="primary">保存故事</button></footer>
+    </form>
+  </dialog>
+  <div id="storyToast" class="story-toast" aria-live="polite"></div>
+  <script src="/static/stories.js?v=2.3.5"></script>
+</body>
+</html>

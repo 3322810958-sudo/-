@@ -1,5 +1,5 @@
 ﻿param(
-  [string]$Version = "2.3.4",
+  [string]$Version = "2.3.5",
   [string]$PythonPath = "",
   [switch]$SkipBuild,
   [switch]$SkipTutorialPdf,
@@ -81,6 +81,25 @@ foreach ($name in $deltaItems) {
   if (Test-Path -LiteralPath $item) { Copy-Item -LiteralPath $item -Destination (Join-Path $patchStage $name) -Recurse -Force }
 }
 Copy-Item -LiteralPath (Join-Path $root "docs\补丁安装说明.txt") -Destination $patchStage -Force
+$manifestFiles = @()
+foreach ($file in Get-ChildItem -LiteralPath $patchStage -File -Recurse) {
+  $relative = $file.FullName.Substring($patchStage.Length).TrimStart('\','/').Replace('\','/')
+  $manifestFiles += [ordered]@{
+    path = $relative
+    size = $file.Length
+    sha256 = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+  }
+}
+$patchManifest = [ordered]@{
+  product = "燕翔车队经费管理系统"
+  format_version = 1
+  target_version = $Version
+  compatible_from = "any-v2"
+  data_policy = "preserve-or-restore-verified-backup"
+  created_at = (Get-Date).ToUniversalTime().ToString("o")
+  files = $manifestFiles
+}
+$patchManifest | ConvertTo-Json -Depth 6 | Out-File -LiteralPath (Join-Path $patchStage "patch-manifest.json") -Encoding utf8
 Compress-Archive -Path (Join-Path $patchStage "*") -DestinationPath $updateZip -CompressionLevel Optimal
 Remove-Item -LiteralPath $patchStage -Recurse -Force
 

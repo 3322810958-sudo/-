@@ -109,7 +109,8 @@ from .platform_features import (
 from .quality import list_issues, record_issue, resolve_issue, sync_ocr_issues
 from .security import hash_password, token_hash, validate_new_password, validate_username, verify_password
 from .sync_engine import SyncError, apply_events, events_after, perform_sync, sync_config, valid_sync_key
-from .updater import check_for_update, get_update_job, schedule_update_install, start_update_download
+from .story_engine import extract_embedded_images, extract_story_text, story_asset_role
+from .updater import check_for_update, get_update_job, list_patch_releases, schedule_update_install, start_update_download
 from .wallpaper_engine import scan_wallpapers, wallpaper_item
 
 
@@ -133,7 +134,7 @@ def _default_login_info_items(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     credits += "\n鸣谢：PaddleOCR、pypdf、pywebview、Tabler 等开源项目"
     return [
         {"id": "credits", "type": "credits", "title": "创作者与鸣谢", "content": credits, "visible": True},
-        {"id": "updates", "type": "updates", "title": "V2.3.4 本次更新", "content": "批量修改复用发票录入界面；登录信息轮播；侧栏与顶栏独立透明度；AI 与 NAS 接口预留。", "visible": True},
+        {"id": "updates", "type": "updates", "title": "V2.3.5 本次更新", "content": "修复完整业务回溯；新增独立故事模式；支持历史补丁回溯；优化每次启动速度。", "visible": True},
         {"id": "season_total", "type": "total", "title": "当前赛季记款总金额", "content": "", "visible": True},
         {"id": "motto", "type": "motto", "title": "队训", "content": "脚踏实地、精益求精", "visible": True},
         {"id": "philosophy", "type": "philosophy", "title": "造车理念", "content": "品质、精致、极致", "visible": True},
@@ -294,6 +295,236 @@ async def index() -> FileResponse:
     return FileResponse(STATIC_DIR / "index.html", media_type="text/html; charset=utf-8")
 
 
+@app.get("/stories", response_class=HTMLResponse)
+async def stories_page() -> FileResponse:
+    return FileResponse(STATIC_DIR / "stories.html", media_type="text/html; charset=utf-8")
+
+
+def _story_payload(conn: sqlite3.Connection, row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
+    item = dict(row)
+    assets = [dict(asset) for asset in conn.execute(
+        """SELECT sa.id,sa.asset_role,sa.caption,sa.sort_order,a.id AS attachment_id,
+        a.original_name,a.mime_type,a.size_bytes
+        FROM story_assets sa JOIN attachments a ON a.id=sa.attachment_id
+        WHERE sa.story_id=? AND a.deleted_at IS NULL ORDER BY sa.sort_order,sa.created_at""",
+        (item["id"],),
+    ).fetchall()]
+    for asset in assets:
+        asset["url"] = f"/api/stories/assets/{asset['id']}"
+        asset["download_url"] = f"/api/stories/assets/{asset['id']}?download=1"
+    item["assets"] = assets
+    item["published"] = bool(item.get("published"))
+    return item
+
+
+def _optional_story_admin(request: Request) -> AuthContext | None:
+    try:
+        auth = get_auth(request)
+    except HTTPException:
+        return None
+    return auth if auth.user.get("role") == "admin" else None
+
+
+@app.get("/api/stories")
+async def stories_public(request: Request, season_id: str = "", include_drafts: bool = False) -> dict[str, Any]:
+    admin = _optional_story_admin(request)
+    with connect() as conn:
+        clauses = ["s.deleted_at IS NULL"]
+        params: list[Any] = []
+        if not (admin and include_drafts):
+            clauses.append("s.published=1")
+        if season_id:
+            clauses.append("s.season_id=?")
+            params.append(season_id)
+        rows = conn.execute(
+            f"""SELECT s.*,se.name AS season_name FROM stories s JOIN seasons se ON se.id=s.season_id
+            WHERE {' AND '.join(clauses)} ORDER BY s.published_date DESC,s.sort_order,s.created_at DESC""",
+            params,
+        ).fetchall()
+        stories = [_story_payload(conn, row) for row in rows]
+        seasons = [dict(row) for row in conn.execute(
+            """SELECT DISTINCT se.id,se.name,se.sort_order FROM seasons se JOIN stories s ON s.season_id=se.id
+            WHERE s.deleted_at IS NULL AND (s.published=1 OR ?) ORDER BY se.sort_order DESC,se.created_at DESC""",
+            (1 if admin else 0,),
+        ).fetchall()]
+    return {
+        "items": stories,
+        "seasons": seasons,
+        "can_edit": bool(admin),
+        "csrf_token": admin.session["csrf_token"] if admin else "",
+        "version": __version__,
+    }
+
+
+@app.get("/api/stories/assets/{asset_id}")
+async def story_asset_content(asset_id: str, request: Request, download: bool = False) -> FileResponse:
+    with connect() as conn:
+        row = conn.execute(
+            """SELECT a.*,s.published FROM story_assets sa JOIN stories s ON s.id=sa.story_id
+            JOIN attachments a ON a.id=sa.attachment_id
+            WHERE sa.id=? AND s.deleted_at IS NULL AND a.deleted_at IS NULL""",
+            (asset_id,),
+        ).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="故事附件不存在")
+    if not row["published"] and not _optional_story_admin(request):
+        raise HTTPException(status_code=404, detail="故事附件不存在")
+    path = attachment_path(row["stored_name"])
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="故事附件文件不存在")
+    disposition = "attachment" if download else "inline"
+    return FileResponse(
+        path, media_type=row["mime_type"], filename=row["original_name"] if download else None,
+        headers={"Content-Disposition": f'{disposition}; filename*=UTF-8\'\'{quote(str(row["original_name"]))}'},
+    )
+
+
+def _clean_story_input(payload: dict[str, Any], conn: sqlite3.Connection) -> dict[str, Any]:
+    title = str(payload.get("title") or "").strip()[:200]
+    if not title:
+        raise ValueError("请填写故事标题")
+    season_id = str(payload.get("season_id") or current_season_id(conn))
+    if not conn.execute("SELECT 1 FROM seasons WHERE id=? AND deleted_at IS NULL", (season_id,)).fetchone():
+        raise ValueError("所选赛季不存在")
+    layout = str(payload.get("layout_style") or "editorial")
+    if layout not in {"editorial", "timeline", "gallery", "technical"}:
+        layout = "editorial"
+    color = str(payload.get("accent_color") or "#27d3ff")
+    if not re.fullmatch(r"#[0-9a-fA-F]{6}", color):
+        color = "#27d3ff"
+    return {
+        "season_id": season_id,
+        "title": title,
+        "summary": str(payload.get("summary") or "").strip()[:5000],
+        "body": str(payload.get("body") or "").strip()[:500000],
+        "author_name": str(payload.get("author_name") or "").strip()[:100],
+        "published_date": str(payload.get("published_date") or utc_now()[:10])[:10],
+        "layout_style": layout,
+        "accent_color": color,
+        "published": 1 if payload.get("published") else 0,
+        "sort_order": max(-9999, min(9999, int(payload.get("sort_order") or 0))),
+    }
+
+
+@app.post("/api/admin/stories")
+async def story_create(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    auth = get_auth(request); require_csrf(request, auth); require_admin(auth)
+    try:
+        with transaction() as conn:
+            clean = _clean_story_input(payload, conn)
+            create_snapshot(conn, auth.user["id"], "新增故事前", clean["title"])
+            now = utc_now(); story_id = new_id("story")
+            row = {
+                "id": story_id, **clean, "created_by": auth.user["id"], "created_at": now,
+                "updated_at": now, "version": 1, "device_id": get_device_id(conn), "deleted_at": None,
+            }
+            _insert_columns = list(row)
+            conn.execute(
+                f"INSERT INTO stories({','.join(_insert_columns)}) VALUES({','.join('?' for _ in _insert_columns)})",
+                tuple(row[column] for column in _insert_columns),
+            )
+            audit(conn, auth.user["id"], "create", "story", story_id, {"title": clean["title"]})
+        return {"ok": True, "id": story_id}
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.put("/api/admin/stories/{story_id}")
+async def story_update(story_id: str, payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    auth = get_auth(request); require_csrf(request, auth); require_admin(auth)
+    try:
+        with transaction() as conn:
+            current = conn.execute("SELECT * FROM stories WHERE id=? AND deleted_at IS NULL", (story_id,)).fetchone()
+            if not current:
+                raise ValueError("故事不存在")
+            clean = _clean_story_input(payload, conn)
+            create_snapshot(conn, auth.user["id"], "编辑故事前", current["title"])
+            assignments = ",".join(f"{key}=?" for key in clean)
+            conn.execute(
+                f"UPDATE stories SET {assignments},updated_at=?,version=version+1 WHERE id=?",
+                (*clean.values(), utc_now(), story_id),
+            )
+            audit(conn, auth.user["id"], "update", "story", story_id, {"title": clean["title"]})
+        return {"ok": True, "id": story_id}
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.delete("/api/admin/stories/{story_id}")
+async def story_delete(story_id: str, request: Request) -> dict[str, Any]:
+    auth = get_auth(request); require_csrf(request, auth); require_admin(auth)
+    with transaction() as conn:
+        current = conn.execute("SELECT * FROM stories WHERE id=? AND deleted_at IS NULL", (story_id,)).fetchone()
+        if not current:
+            raise HTTPException(status_code=404, detail="故事不存在")
+        create_snapshot(conn, auth.user["id"], "删除故事前", current["title"])
+        conn.execute("UPDATE stories SET deleted_at=?,updated_at=?,version=version+1 WHERE id=?", (utc_now(), utc_now(), story_id))
+        audit(conn, auth.user["id"], "delete", "story", story_id, {"title": current["title"]})
+    return {"ok": True}
+
+
+@app.post("/api/admin/stories/{story_id}/assets")
+async def story_assets_upload(
+    story_id: str, request: Request, files: list[UploadFile] = File(...), extract_content: bool = Form(True)
+) -> dict[str, Any]:
+    auth = get_auth(request); require_csrf(request, auth); require_admin(auth)
+    with connect() as conn:
+        if not conn.execute("SELECT 1 FROM stories WHERE id=? AND deleted_at IS NULL", (story_id,)).fetchone():
+            raise HTTPException(status_code=404, detail="故事不存在")
+    saved: list[dict[str, Any]] = []
+    extracted_sections: list[str] = []
+    embedded: list[dict[str, Any]] = []
+    for upload in files[:100]:
+        attachment = await save_upload(upload, auth.user)
+        path = attachment_path(attachment["stored_name"])
+        text = await asyncio.to_thread(extract_story_text, path) if extract_content else ""
+        if text:
+            extracted_sections.append(f"【{attachment['original_name']}】\n{text}")
+        temp_dir = Path(tempfile.mkdtemp(prefix="yxrt_story_media_", dir=TMP_DIR))
+        try:
+            for image_path in await asyncio.to_thread(extract_embedded_images, path, temp_dir):
+                embedded.append(save_file(image_path, f"{Path(attachment['original_name']).stem}_{image_path.name}", auth.user))
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+        saved.append(attachment)
+    with transaction() as conn:
+        now = utc_now()
+        has_cover = bool(conn.execute(
+            "SELECT 1 FROM story_assets WHERE story_id=? AND asset_role='cover' LIMIT 1", (story_id,),
+        ).fetchone())
+        added_ids: set[str] = set()
+        for index, attachment in enumerate([*saved, *embedded]):
+            attachment_id = str(attachment["id"])
+            if attachment_id in added_ids:
+                continue
+            role = story_asset_role(str(attachment["original_name"]))
+            if role == "gallery" and not has_cover:
+                role = "cover"; has_cover = True
+            conn.execute(
+                """INSERT OR IGNORE INTO story_assets(id,story_id,attachment_id,asset_role,caption,sort_order,created_at,updated_at)
+                VALUES(?,?,?,?,?,?,?,?)""",
+                (new_id("story_asset"), story_id, attachment_id, role, "", index, now, now),
+            )
+            added_ids.add(attachment_id)
+        if extracted_sections:
+            current = conn.execute("SELECT body FROM stories WHERE id=?", (story_id,)).fetchone()
+            combined = (str(current["body"] or "").rstrip() + "\n\n" + "\n\n".join(extracted_sections)).strip()[:500000]
+            conn.execute("UPDATE stories SET body=?,updated_at=?,version=version+1 WHERE id=?", (combined, now, story_id))
+        audit(conn, auth.user["id"], "upload", "story", story_id, {"files": len(saved), "embedded_images": len(embedded)})
+    return {"ok": True, "files": len(saved), "embedded_images": len(embedded), "extracted_text": bool(extracted_sections)}
+
+
+@app.delete("/api/admin/stories/{story_id}/assets/{asset_id}")
+async def story_asset_delete(story_id: str, asset_id: str, request: Request) -> dict[str, Any]:
+    auth = get_auth(request); require_csrf(request, auth); require_admin(auth)
+    with transaction() as conn:
+        result = conn.execute("DELETE FROM story_assets WHERE id=? AND story_id=?", (asset_id, story_id))
+        if not result.rowcount:
+            raise HTTPException(status_code=404, detail="故事附件不存在")
+        audit(conn, auth.user["id"], "delete", "story_asset", asset_id, {"story_id": story_id})
+    return {"ok": True}
+
+
 @app.get("/health")
 async def health() -> dict[str, Any]:
     return {"ok": True, "version": __version__, "mode": APP_MODE, "time": utc_now()}
@@ -308,11 +539,27 @@ async def update_check(request: Request) -> dict[str, Any]:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
+@app.get("/api/update/releases")
+async def update_releases(request: Request) -> dict[str, Any]:
+    get_auth(request)
+    try:
+        return {"items": await asyncio.to_thread(list_patch_releases)}
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
 @app.post("/api/admin/update/download")
 async def update_download(request: Request) -> dict[str, Any]:
     auth = get_auth(request)
     require_csrf(request, auth)
     try:
+        payload = await request.json()
+    except (ValueError, json.JSONDecodeError):
+        payload = {}
+    try:
+        target_version = str(payload.get("target_version") or "")
+        if target_version:
+            return await asyncio.to_thread(start_update_download, auth.user["id"], target_version)
         return await asyncio.to_thread(start_update_download, auth.user["id"])
     except RuntimeError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -327,6 +574,25 @@ async def update_job_status(job_id: str, request: Request) -> dict[str, Any]:
     return job
 
 
+def _find_version_restore_point(version: str) -> Path | None:
+    roots = [RUNTIME_HOME / "backups", DB_PATH.parent / "backups"]
+    candidates: list[Path] = []
+    for root in roots:
+        if root.is_dir():
+            candidates.extend(root.glob("*.zip"))
+    for path in sorted({item.resolve() for item in candidates}, key=lambda item: item.stat().st_mtime, reverse=True):
+        try:
+            with zipfile.ZipFile(path) as archive:
+                if "manifest.json" not in archive.namelist():
+                    continue
+                manifest = json.loads(archive.read("manifest.json").decode("utf-8"))
+            if str(manifest.get("version") or "").lstrip("vV") == str(version).lstrip("vV"):
+                return path
+        except (OSError, zipfile.BadZipFile, json.JSONDecodeError):
+            continue
+    return None
+
+
 @app.post("/api/admin/update/jobs/{job_id}/install")
 async def update_install(job_id: str, request: Request) -> dict[str, Any]:
     auth = get_auth(request)
@@ -334,9 +600,17 @@ async def update_install(job_id: str, request: Request) -> dict[str, Any]:
     job = get_update_job(job_id)
     if not job or job.get("created_by") != auth.user["id"]:
         raise HTTPException(status_code=404, detail="更新任务不存在")
-    backup_dir = DB_PATH.parent / "backups"
+    backup_dir = RUNTIME_HOME / "backups"
     stamp = utc_now().replace(":", "-")[:19]
     version = re.sub(r"[^0-9A-Za-z._-]", "", str(job.get("latest_version") or "latest")) or "latest"
+    restore_point = None
+    if job.get("direction") == "rollback":
+        restore_point = await asyncio.to_thread(_find_version_restore_point, version)
+        if restore_point is None:
+            raise HTTPException(
+                status_code=400,
+                detail=f"没有找到 V{version} 的完整数据恢复点。为避免发票与程序版本不一致，已停止回溯。",
+            )
     backup_path = backup_dir / f"自动更新前完整备份_V{__version__}_to_V{version}_{stamp}.zip"
     try:
         backup_dir.mkdir(parents=True, exist_ok=True)
@@ -345,9 +619,17 @@ async def update_install(job_id: str, request: Request) -> dict[str, Any]:
         backup_path.unlink(missing_ok=True)
         raise HTTPException(status_code=400, detail=f"自动完整备份失败，已停止更新：{exc}") from exc
     try:
-        result = schedule_update_install(job_id, auth.user["id"])
+        if restore_point:
+            result = schedule_update_install(
+                job_id, auth.user["id"], restore_archive=restore_point, safety_backup=backup_path,
+            )
+        else:
+            result = schedule_update_install(job_id, auth.user["id"])
         result["backup_path"] = str(backup_path)
-        result["message"] = "完整备份已自动保存，更新安装程序已启动，软件将自动重启"
+        result["message"] = (
+            f"已保存当前完整备份，并将程序与业务数据回溯到 V{version}，软件将自动重启"
+            if restore_point else "完整备份已自动保存，更新安装程序已启动，软件将自动重启"
+        )
         return result
     except RuntimeError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -2176,11 +2458,19 @@ async def snapshots_restore(snapshot_id: str, request: Request) -> dict[str, Any
     require_admin(auth)
     try:
         with transaction() as conn:
-            restore_snapshot(conn, snapshot_id, auth.user["id"])
+            restored = restore_snapshot(conn, snapshot_id, auth.user["id"])
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     await hub.notify("restored")
-    return {"ok": True, "message": "历史版本已恢复，恢复前状态已自动保存"}
+    return {
+        "ok": True,
+        "message": (
+            f"历史版本已恢复：{restored['invoices']} 张发票、{restored['members']} 名成员、"
+            f"{restored['attachments']} 个附件、{restored['stories']} 篇故事；恢复前状态已自动保存"
+        ),
+        "restored": restored,
+        "requires_relogin": True,
+    }
 
 
 @app.delete("/api/admin/demo-data")

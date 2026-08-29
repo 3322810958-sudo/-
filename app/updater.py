@@ -13,7 +13,7 @@ from typing import Any
 import httpx
 
 from . import __version__
-from .config import TMP_DIR
+from .config import RUNTIME_HOME, TMP_DIR
 from .database import new_id, utc_now
 
 
@@ -36,6 +36,43 @@ def _github_headers() -> dict[str, str]:
     }
 
 
+def _release_details(release: dict[str, Any]) -> dict[str, Any]:
+    latest_version = str(release.get("tag_name") or "").lstrip("vV")
+    assets = release.get("assets") if isinstance(release.get("assets"), list) else []
+    packages = [item for item in assets if str(item.get("name") or "").lower().endswith(".zip")]
+
+    def package_score(item: dict[str, Any]) -> tuple[int, int]:
+        name = str(item.get("name") or "").lower()
+        is_patch = any(word in name for word in ("update", "patch", "补丁"))
+        is_full = any(word in name for word in ("full", "complete", "完整版"))
+        return (0 if is_patch else (2 if is_full else 1), 0 if "windows" in name else 1)
+
+    packages.sort(key=package_score)
+    package = packages[0] if packages else None
+    checksum = None
+    if package:
+        target = str(package.get("name") or "").lower()
+        checksum = next((item for item in assets if str(item.get("name") or "").lower() == f"{target}.sha256"), None)
+        if checksum is None:
+            checksum = next((item for item in assets if str(item.get("name") or "").lower().endswith(".sha256")), None)
+    comparison = (_version_tuple(latest_version) > _version_tuple(__version__)) - (_version_tuple(latest_version) < _version_tuple(__version__))
+    return {
+        "current_version": __version__, "latest_version": latest_version or __version__,
+        "available": bool(latest_version and latest_version != __version__), "release_available": True,
+        "direction": "upgrade" if comparison > 0 else ("rollback" if comparison < 0 else "current"),
+        "release_name": str(release.get("name") or release.get("tag_name") or latest_version),
+        "release_notes": str(release.get("body") or ""), "published_at": str(release.get("published_at") or ""),
+        "release_url": str(release.get("html_url") or f"https://github.com/{UPDATE_REPOSITORY}/releases"),
+        "package": {
+            "name": str(package.get("name") or ""), "url": str(package.get("url") or package.get("browser_download_url") or ""),
+            "browser_url": str(package.get("browser_download_url") or ""), "size": int(package.get("size") or 0),
+        } if package else None,
+        "checksum_url": str(checksum.get("url") or checksum.get("browser_download_url") or "") if checksum else "",
+        "install_supported": bool(package and checksum and getattr(sys, "frozen", False)),
+        "repository": UPDATE_REPOSITORY,
+    }
+
+
 def check_for_update() -> dict[str, Any]:
     try:
         with httpx.Client(timeout=15, follow_redirects=True, headers=_github_headers()) as client:
@@ -49,50 +86,36 @@ def check_for_update() -> dict[str, Any]:
         }
     if response.status_code != 200:
         raise RuntimeError(f"GitHub 版本检查失败：HTTP {response.status_code}")
-    release = response.json()
-    latest_version = str(release.get("tag_name") or "").lstrip("vV")
-    assets = release.get("assets") if isinstance(release.get("assets"), list) else []
-    packages = [item for item in assets if str(item.get("name") or "").lower().endswith((".zip", ".exe"))]
+    result = _release_details(response.json())
+    result["available"] = result["direction"] == "upgrade"
+    result["message"] = "发现新版本" if result["available"] else "当前已是最新版本"
+    return result
 
-    def package_score(item: dict[str, Any]) -> tuple[int, int, int]:
-        name = str(item.get("name") or "").lower()
-        is_update = any(word in name for word in ("update", "patch", "补丁"))
-        is_full = any(word in name for word in ("full", "complete", "完整版"))
-        return (
-            0 if "windows" in name else 1,
-            0 if is_update else (2 if is_full else 1),
-            0 if name.endswith(".zip") else 1,
-        )
 
-    packages.sort(key=package_score)
-    package = packages[0] if packages else None
-    checksum = None
-    if package:
-        target = str(package.get("name") or "").lower()
-        checksum = next((item for item in assets if str(item.get("name") or "").lower() == f"{target}.sha256"), None)
-        if checksum is None:
-            checksum = next((item for item in assets if str(item.get("name") or "").lower().endswith(".sha256")), None)
-    available = bool(latest_version and _version_tuple(latest_version) > _version_tuple(__version__))
-    return {
-        "current_version": __version__,
-        "latest_version": latest_version or __version__,
-        "available": available,
-        "release_available": True,
-        "release_name": str(release.get("name") or release.get("tag_name") or latest_version),
-        "release_notes": str(release.get("body") or ""),
-        "published_at": str(release.get("published_at") or ""),
-        "release_url": str(release.get("html_url") or f"https://github.com/{UPDATE_REPOSITORY}/releases"),
-        "package": {
-            "name": str(package.get("name") or ""),
-            "url": str(package.get("url") or package.get("browser_download_url") or ""),
-            "browser_url": str(package.get("browser_download_url") or ""),
-            "size": int(package.get("size") or 0),
-        } if package else None,
-        "checksum_url": str(checksum.get("url") or checksum.get("browser_download_url") or "") if checksum else "",
-        "install_supported": bool(package and checksum and getattr(sys, "frozen", False)),
-        "message": "发现新版本" if available else "当前已是最新版本",
-        "repository": UPDATE_REPOSITORY,
-    }
+def list_patch_releases(limit: int = 30) -> list[dict[str, Any]]:
+    url = f"https://api.github.com/repos/{UPDATE_REPOSITORY}/releases?per_page={max(1, min(50, limit))}"
+    try:
+        with httpx.Client(timeout=15, follow_redirects=True, headers=_github_headers()) as client:
+            response = client.get(url)
+            response.raise_for_status()
+    except httpx.HTTPError as exc:
+        raise RuntimeError(f"无法读取 GitHub 补丁列表：{exc}") from exc
+    releases = response.json() if isinstance(response.json(), list) else []
+    return [_release_details(item) for item in releases if not item.get("draft") and not item.get("prerelease")]
+
+
+def release_for_version(version: str) -> dict[str, Any]:
+    safe = re.sub(r"[^0-9A-Za-z._-]", "", str(version or ""))
+    if not safe:
+        return check_for_update()
+    url = f"https://api.github.com/repos/{UPDATE_REPOSITORY}/releases/tags/v{safe.lstrip('vV')}"
+    try:
+        with httpx.Client(timeout=15, follow_redirects=True, headers=_github_headers()) as client:
+            response = client.get(url)
+            response.raise_for_status()
+    except httpx.HTTPError as exc:
+        raise RuntimeError(f"未找到 V{safe} 补丁：{exc}") from exc
+    return _release_details(response.json())
 
 
 def _safe_asset_url(url: str) -> bool:
@@ -156,10 +179,10 @@ def _download_update(job_id: str, release: dict[str, Any]) -> None:
         _set_job(job_id, status="failed", error=str(exc)[:500], message="更新下载失败")
 
 
-def start_update_download(user_id: str) -> dict[str, Any]:
-    release = check_for_update()
+def start_update_download(user_id: str, target_version: str = "") -> dict[str, Any]:
+    release = release_for_version(target_version) if target_version else check_for_update()
     if not release.get("available"):
-        raise RuntimeError(str(release.get("message") or "当前没有可安装的新版本"))
+        raise RuntimeError(str(release.get("message") or "目标版本与当前版本相同"))
     if not release.get("package") or not release.get("checksum_url"):
         raise RuntimeError("新版本缺少 Windows 更新包或 SHA-256 校验文件")
     job_id = new_id("update")
@@ -167,6 +190,7 @@ def start_update_download(user_id: str) -> dict[str, Any]:
         "id": job_id, "status": "downloading", "progress": 1, "message": "正在连接 GitHub",
         "error": "", "created_by": user_id, "created_at": utc_now(), "updated_at": utc_now(),
         "latest_version": release.get("latest_version"), "release_url": release.get("release_url"),
+        "direction": release.get("direction", "upgrade"),
     }
     with UPDATE_LOCK:
         UPDATE_JOBS[job_id] = job
@@ -186,12 +210,18 @@ _UPDATER_SCRIPT = r'''param(
   [Parameter(Mandatory=$true)][int]$ProcessId,
   [Parameter(Mandatory=$true)][string]$ArchivePath,
   [Parameter(Mandatory=$true)][string]$TargetPath,
-  [Parameter(Mandatory=$true)][string]$ExecutableName
+  [Parameter(Mandatory=$true)][string]$ExecutableName,
+  [Parameter(Mandatory=$true)][string]$RuntimePath,
+  [Parameter(Mandatory=$true)][string]$ExpectedVersion,
+  [string]$RestoreArchivePath = '',
+  [string]$SafetyBackupPath = ''
 )
 $ErrorActionPreference = 'Stop'
 $target = [IO.Path]::GetFullPath($TargetPath)
 $archive = [IO.Path]::GetFullPath($ArchivePath)
+$runtime = [IO.Path]::GetFullPath($RuntimePath)
 if ($target.Length -lt 6 -or -not (Test-Path -LiteralPath $target -PathType Container)) { throw '更新目标目录不安全' }
+if ($runtime.Length -lt 6 -or -not (Test-Path -LiteralPath $runtime -PathType Container)) { throw '运行数据目录不安全' }
 if (-not (Test-Path -LiteralPath $archive -PathType Leaf)) { throw '更新包不存在' }
 try { Wait-Process -Id $ProcessId -Timeout 180 -ErrorAction Stop } catch { Start-Sleep -Seconds 2 }
 $extract = Join-Path ([IO.Path]::GetDirectoryName($archive)) ('extract-' + [Guid]::NewGuid().ToString('N'))
@@ -202,6 +232,18 @@ $top = @(Get-ChildItem -LiteralPath $extract)
 if ($top.Count -eq 1 -and $top[0].PSIsContainer) { $source = $top[0].FullName }
 $source = [IO.Path]::GetFullPath($source)
 if (-not $source.StartsWith([IO.Path]::GetFullPath($extract), [StringComparison]::OrdinalIgnoreCase)) { throw '更新包目录结构不安全' }
+$manifestPath = Join-Path $source 'patch-manifest.json'
+if (Test-Path -LiteralPath $manifestPath -PathType Leaf) {
+  $manifest = Get-Content -LiteralPath $manifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
+  if ($manifest.product -ne '燕翔车队经费管理系统' -or $manifest.target_version -ne $ExpectedVersion) { throw '补丁版本清单不匹配' }
+  foreach ($entry in $manifest.files) {
+    $candidate = [IO.Path]::GetFullPath((Join-Path $source ([string]$entry.path)))
+    if (-not $candidate.StartsWith($source, [StringComparison]::OrdinalIgnoreCase) -or -not (Test-Path -LiteralPath $candidate -PathType Leaf)) { throw '补丁文件清单不安全' }
+    if ((Get-FileHash -LiteralPath $candidate -Algorithm SHA256).Hash.ToLowerInvariant() -ne ([string]$entry.sha256).ToLowerInvariant()) { throw ('补丁文件校验失败：' + [string]$entry.path) }
+  }
+} elseif ([version]$ExpectedVersion -ge [version]'2.3.5') {
+  throw '补丁缺少版本清单'
+}
 $newExe = Join-Path $source $ExecutableName
 if (-not (Test-Path -LiteralPath $newExe -PathType Leaf)) { throw '更新包中缺少主程序' }
 $backup = Join-Path $target ('.update-backup-' + (Get-Date -Format 'yyyyMMddHHmmss'))
@@ -209,6 +251,29 @@ New-Item -ItemType Directory -Path $backup -Force | Out-Null
 $preserve = @('data','uploads','models','tmp','backups','.env')
 $installed = [Collections.Generic.List[string]]::new()
 $currentName = ''
+function Restore-RuntimeArchive([string]$ZipPath, [string]$RuntimeRoot, [string]$WorkRoot) {
+  if (-not $ZipPath) { return }
+  $zip = [IO.Path]::GetFullPath($ZipPath)
+  if (-not (Test-Path -LiteralPath $zip -PathType Leaf)) { throw '目标版本缺少数据恢复点' }
+  $restore = Join-Path $WorkRoot ('runtime-' + [Guid]::NewGuid().ToString('N'))
+  New-Item -ItemType Directory -Path $restore -Force | Out-Null
+  Expand-Archive -LiteralPath $zip -DestinationPath $restore -Force
+  $database = Join-Path $restore 'database.sqlite'
+  if (-not (Test-Path -LiteralPath $database -PathType Leaf)) { throw '数据恢复点缺少数据库' }
+  $dataDir = Join-Path $RuntimeRoot 'data'
+  New-Item -ItemType Directory -Path $dataDir -Force | Out-Null
+  foreach ($name in @('yanxiang_expense.db-wal','yanxiang_expense.db-shm')) {
+    $sidecar = Join-Path $dataDir $name
+    if (Test-Path -LiteralPath $sidecar) { Remove-Item -LiteralPath $sidecar -Force }
+  }
+  Copy-Item -LiteralPath $database -Destination (Join-Path $dataDir 'yanxiang_expense.db') -Force
+  $uploadsSource = Join-Path $restore 'uploads'
+  if (Test-Path -LiteralPath $uploadsSource -PathType Container) {
+    $uploadsTarget = Join-Path $RuntimeRoot 'uploads'
+    if (Test-Path -LiteralPath $uploadsTarget) { Remove-Item -LiteralPath $uploadsTarget -Recurse -Force }
+    Copy-Item -LiteralPath $uploadsSource -Destination $uploadsTarget -Recurse -Force
+  }
+}
 try {
   foreach ($item in Get-ChildItem -LiteralPath $source) {
     $currentName = $item.Name
@@ -222,6 +287,7 @@ try {
   }
   $exe = Join-Path $target $ExecutableName
   if (-not (Test-Path -LiteralPath $exe -PathType Leaf)) { throw '更新后主程序校验失败' }
+  if ($RestoreArchivePath) { Restore-RuntimeArchive $RestoreArchivePath $runtime $extract }
   Start-Process -FilePath $exe -WorkingDirectory $target
   Remove-Item -LiteralPath $extract -Recurse -Force -ErrorAction SilentlyContinue
   Remove-Item -LiteralPath $archive -Force -ErrorAction SilentlyContinue
@@ -237,6 +303,9 @@ try {
   foreach ($item in Get-ChildItem -LiteralPath $backup -ErrorAction SilentlyContinue) {
     Move-Item -LiteralPath $item.FullName -Destination (Join-Path $target $item.Name) -Force
   }
+  if ($SafetyBackupPath) {
+    try { Restore-RuntimeArchive $SafetyBackupPath $runtime $extract } catch { }
+  }
   "$(Get-Date -Format s) 更新失败并已回滚：$message" | Out-File -LiteralPath (Join-Path $target 'update-error.log') -Encoding utf8 -Append
   $oldExe = Join-Path $target $ExecutableName
   if (Test-Path -LiteralPath $oldExe -PathType Leaf) { Start-Process -FilePath $oldExe -WorkingDirectory $target }
@@ -245,7 +314,10 @@ try {
 '''
 
 
-def schedule_update_install(job_id: str, user_id: str) -> dict[str, Any]:
+def schedule_update_install(
+    job_id: str, user_id: str, *, restore_archive: Path | None = None,
+    safety_backup: Path | None = None,
+) -> dict[str, Any]:
     if not getattr(sys, "frozen", False):
         raise RuntimeError("源码运行模式不能自动覆盖文件，请使用 GitHub 拉取更新")
     with UPDATE_LOCK:
@@ -259,7 +331,8 @@ def schedule_update_install(job_id: str, user_id: str) -> dict[str, Any]:
         job["message"] = "软件即将重启并安装更新"
 
     executable = Path(sys.executable).resolve()
-    runtime_home = executable.parent
+    install_home = executable.parent
+    data_home = RUNTIME_HOME.resolve()
     script_path = archive.with_suffix(".ps1")
     script_path.write_text(_UPDATER_SCRIPT, encoding="utf-8-sig")
     creation_flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
@@ -267,9 +340,11 @@ def schedule_update_install(job_id: str, user_id: str) -> dict[str, Any]:
         [
             "powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden",
             "-File", str(script_path), "-ProcessId", str(os.getpid()), "-ArchivePath", str(archive),
-            "-TargetPath", str(runtime_home), "-ExecutableName", executable.name,
+            "-TargetPath", str(install_home), "-ExecutableName", executable.name,
+            "-RuntimePath", str(data_home), "-RestoreArchivePath", str(restore_archive or ""),
+            "-SafetyBackupPath", str(safety_backup or ""), "-ExpectedVersion", str(job.get("latest_version") or ""),
         ],
-        cwd=str(runtime_home),
+        cwd=str(install_home),
         creationflags=creation_flags,
         close_fds=True,
     )

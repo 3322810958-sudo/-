@@ -4,9 +4,9 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#07101b">
-  <title>燕翔车队经费管理系统 V2.3.4</title>
+  <title>燕翔车队经费管理系统 V2.3.5</title>
   <link rel="icon" href="/static/assets/team-logo.png">
-  <link rel="stylesheet" href="/static/app.css?v=2.3.4">
+  <link rel="stylesheet" href="/static/app.css?v=2.3.5">
 </head>
 <body>
   <div id="backgroundLayer" class="background-layer"><video id="appBackgroundVideo" muted loop autoplay playsinline></video></div>
@@ -35,7 +35,7 @@
       <div class="login-brand">
         <img src="/static/assets/team-logo.png" alt="燕翔车队队标">
         <div>
-          <p class="eyebrow">赛车运营 · V2.3.4</p>
+          <p class="eyebrow">赛车运营 · V2.3.5</p>
           <h1><span id="loginTeamName">燕翔车队</span><br><span>经费管理系统</span></h1>
         </div>
       </div>
@@ -45,6 +45,7 @@
         <label>密码<div class="password-field"><input id="loginPassword" type="password" autocomplete="current-password" required value="YXRT@2026"><button id="toggleLoginPassword" type="button" aria-label="显示密码" aria-pressed="false">显示</button></div></label>
         <button class="btn primary wide" type="submit"><span>进入系统</span><b>→</b></button>
         <button id="forgotPasswordBtn" class="login-link-button" type="button">忘记账号或密码？使用原始管理员凭据重置</button>
+        <a class="login-story-link" href="/stories">无需登录 · 浏览车队赛季故事 →</a>
         <p id="loginError" class="form-error" role="alert"></p>
       </form>
       <details class="account-hint">
@@ -80,11 +81,12 @@
         <button data-view="creators"><span class="nav-icon">★</span><span>创作者</span><em>07</em></button>
         <button data-view="settings"><span class="nav-icon">⚙</span><span>系统设置</span><em>08</em></button>
       </nav>
+      <a class="story-mode-link" href="/stories"><span class="nav-icon">◇</span><span>故事模式</span><em>独立</em></a>
       <div class="sidebar-status">
         <div id="syncLamp" class="status-lamp"></div>
         <div><strong id="syncLabel">本地模式</strong><small id="syncDetail">数据安全保存在本机</small></div>
       </div>
-      <div class="sidebar-foot"><span>燕翔车队经费</span><span id="versionLabel">V2.3.4</span></div>
+      <div class="sidebar-foot"><span>燕翔车队经费</span><span id="versionLabel">V2.3.5</span></div>
     </aside>
 
     <div class="content-shell">
@@ -485,10 +487,11 @@
   <dialog id="updateDialog" class="modal">
     <div class="modal-card">
       <header><div><p class="eyebrow">版本管理</p><h3>更新日志与自动更新</h3></div><button type="button" class="dialog-close" data-close="updateDialog">×</button></header>
-      <div class="update-current"><div><span>当前版本</span><strong id="updateCurrentVersion">V2.3.4</strong></div><label class="mini-switch"><input id="autoUpdateCheck" type="checkbox" checked><span>启动后自动检查</span></label></div>
+      <div class="update-current"><div><span>当前版本</span><strong id="updateCurrentVersion">V2.3.5</strong></div><label class="mini-switch"><input id="autoUpdateCheck" type="checkbox" checked><span>启动后自动检查</span></label></div>
       <label class="update-mode-choice"><span>更新方式</span><select id="updateInstallMode"><option value="auto">自动完整备份并更新（推荐）</option><option value="manual">手动下载补丁包并覆盖</option></select><small id="updateModeHint">安装前自动备份全部赛季、人员、组别、账号、发票与附件，再重启更新。</small></label>
       <div class="update-actions"><button id="checkUpdateBtn" type="button" class="btn secondary">检查 GitHub 新版本</button><a id="updateReleaseLink" class="btn secondary hidden" target="_blank" rel="noopener">查看发布页面</a><button id="installUpdateBtn" type="button" class="btn primary hidden">一键更新到最新版</button></div>
       <div id="updateStatus" class="update-status">正在读取本地更新日志……</div>
+      <section class="patch-history"><div class="panel-heading"><h3>可安装与回溯补丁</h3><span class="panel-tag">只使用补丁包</span></div><div id="patchVersionList" class="patch-version-list"><div class="empty-state">正在读取 GitHub 补丁……</div></div></section>
       <div id="changelogList" class="changelog-list"></div>
       <footer><button type="button" class="btn primary" data-close="updateDialog">完成</button></footer>
     </div>
@@ -560,6 +563,6 @@
       <small id="loadingDetail">任务正在本机运行，请勿关闭软件</small>
     </div>
   </div>
-  <script src="/static/app.js?v=2.3.4"></script>
+  <script src="/static/app.js?v=2.3.5"></script>
 </body>
 </html>

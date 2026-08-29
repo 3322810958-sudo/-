@@ -18,6 +18,15 @@ from . import __version__
 from .config import RUNTIME_HOME
 
 
+STARTUP_HTML = """<!doctype html><html lang='zh-CN'><meta charset='utf-8'><style>
+html,body{height:100%;margin:0;background:#07111b;color:#eaf7ff;font-family:'Microsoft YaHei UI',sans-serif}
+body{display:grid;place-items:center}.box{width:min(520px,76vw)}small{color:#27d3ff;letter-spacing:.18em}
+h1{font-size:30px;margin:12px 0}p{color:#8fa8b9}.track{height:5px;background:#122b3b;overflow:hidden;margin-top:28px}
+.track:after{content:'';display:block;width:35%;height:100%;background:#27d3ff;animation:run 1.1s ease-in-out infinite alternate}
+@keyframes run{to{transform:translateX(190%)}}</style><body><div class='box'><small>YANXIANG RACING</small>
+<h1>经费管理系统正在启动</h1><p>正在加载本地数据，OCR 将在需要时启动。</p><div class='track'></div></div></body></html>"""
+
+
 def open_edge_or_default(url: str) -> None:
     if os.name == "nt":
         roots = [os.environ.get("PROGRAMFILES(X86)"), os.environ.get("PROGRAMFILES"), os.environ.get("LOCALAPPDATA")]
@@ -106,19 +115,12 @@ def main() -> None:
     url = f"http://{host}:{port}"
 
     server: uvicorn.Server | None = None
-    if not app_ready(host, port):
+    service_ready = app_ready(host, port)
+    if not service_ready:
         config = desktop_server_config(host, port)
         server = uvicorn.Server(config)
         thread = threading.Thread(target=server.run, name="yxrt-web", daemon=True)
         thread.start()
-        for _ in range(600):
-            if app_ready(host, port):
-                break
-            if not thread.is_alive():
-                raise RuntimeError("本地服务启动失败")
-            time.sleep(0.1)
-        if not app_ready(host, port):
-            raise RuntimeError("本地服务启动超时，请检查安全软件后重试")
 
     try:
         import webview
@@ -127,7 +129,8 @@ def main() -> None:
         desktop_api = DesktopApi()
         window = webview.create_window(
             f"燕翔车队经费管理系统 V{__version__}",
-            url,
+            url if service_ready else None,
+            html=None if service_ready else STARTUP_HTML,
             width=1460,
             height=920,
             min_size=(1024, 700),
@@ -136,7 +139,21 @@ def main() -> None:
             js_api=desktop_api,
         )
         desktop_api.window = window
+
+        def finish_startup() -> None:
+            if service_ready:
+                return
+            for _ in range(600):
+                if app_ready(host, port):
+                    window.load_url(url)
+                    return
+                if server is not None and server.should_exit:
+                    return
+                time.sleep(0.1)
+            window.load_html(STARTUP_HTML.replace("正在加载本地数据，OCR 将在需要时启动。", "启动超时，请检查安全软件后重试。"))
+
         webview.start(
+            finish_startup,
             gui="edgechromium",
             private_mode=False,
             storage_path=str(webview_storage),
