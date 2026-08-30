@@ -42,6 +42,20 @@ jobs:
           $version = $tag.TrimStart("v")
           & .\scripts\build_release.ps1 -Version $version -SkipTutorialPdf -PatchOnly
           if ($LASTEXITCODE -ne 0) { throw "Windows 发布包构建失败" }
+      - name: 验证补丁可独立启动
+        shell: pwsh
+        run: |
+          $tag = "${{ github.event.inputs.version || github.ref_name }}"
+          $version = $tag.TrimStart("v")
+          $patch = Get-ChildItem -LiteralPath .\release -Filter "*V$version*WindowsUpdate*.zip" | Select-Object -First 1
+          if (-not $patch) { throw "未找到待验证补丁" }
+          $testRoot = Join-Path $env:RUNNER_TEMP "yxrt-patch-smoke"
+          New-Item -ItemType Directory -Path $testRoot -Force | Out-Null
+          Expand-Archive -LiteralPath $patch.FullName -DestinationPath $testRoot -Force
+          $exe = Get-ChildItem -LiteralPath $testRoot -Filter "*.exe" -File | Select-Object -First 1
+          if (-not $exe) { throw "补丁缺少主程序" }
+          & .\scripts\smoke_test_frozen.ps1 -Executable $exe.FullName -ExpectedVersion $version -Port 8792
+          if ($LASTEXITCODE -ne 0) { throw "补丁独立启动验证失败" }
       - name: 发布 GitHub Release
         uses: softprops/action-gh-release@v2
         with:

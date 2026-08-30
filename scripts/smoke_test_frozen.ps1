@@ -1,6 +1,6 @@
 param(
   [string]$Executable = "",
-  [string]$ExpectedVersion = "2.3.5",
+  [string]$ExpectedVersion = "2.3.6",
   [int]$Port = 8792
 )
 

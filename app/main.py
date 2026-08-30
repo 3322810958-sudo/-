@@ -134,7 +134,7 @@ def _default_login_info_items(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     credits += "\n鸣谢：PaddleOCR、pypdf、pywebview、Tabler 等开源项目"
     return [
         {"id": "credits", "type": "credits", "title": "创作者与鸣谢", "content": credits, "visible": True},
-        {"id": "updates", "type": "updates", "title": "V2.3.5 本次更新", "content": "修复完整业务回溯；新增独立故事模式；支持历史补丁回溯；优化每次启动速度。", "visible": True},
+        {"id": "updates", "type": "updates", "title": "V2.3.6 本次更新", "content": "修复一键升级后卡在启动页；补丁同步匹配运行库；新增启动诊断日志与明确错误提示。", "visible": True},
         {"id": "season_total", "type": "total", "title": "当前赛季记款总金额", "content": "", "visible": True},
         {"id": "motto", "type": "motto", "title": "队训", "content": "脚踏实地、精益求精", "visible": True},
         {"id": "philosophy", "type": "philosophy", "title": "造车理念", "content": "品质、精致、极致", "visible": True},

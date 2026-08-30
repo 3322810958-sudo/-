@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import multiprocessing
+import html
+import logging
 import os
 import socket
 import subprocess
@@ -8,6 +10,7 @@ import sys
 import threading
 import time
 import webbrowser
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from urllib.error import URLError
 from urllib.request import urlopen
@@ -18,13 +21,55 @@ from . import __version__
 from .config import RUNTIME_HOME
 
 
-STARTUP_HTML = """<!doctype html><html lang='zh-CN'><meta charset='utf-8'><style>
+STARTUP_TEMPLATE = """<!doctype html><html lang='zh-CN'><meta charset='utf-8'><style>
 html,body{height:100%;margin:0;background:#07111b;color:#eaf7ff;font-family:'Microsoft YaHei UI',sans-serif}
 body{display:grid;place-items:center}.box{width:min(520px,76vw)}small{color:#27d3ff;letter-spacing:.18em}
-h1{font-size:30px;margin:12px 0}p{color:#8fa8b9}.track{height:5px;background:#122b3b;overflow:hidden;margin-top:28px}
+h1{font-size:30px;margin:12px 0}p{color:#8fa8b9;line-height:1.7}.detail{font-size:13px;word-break:break-all}
+.track{height:5px;background:#122b3b;overflow:hidden;margin-top:28px}
 .track:after{content:'';display:block;width:35%;height:100%;background:#27d3ff;animation:run 1.1s ease-in-out infinite alternate}
-@keyframes run{to{transform:translateX(190%)}}</style><body><div class='box'><small>YANXIANG RACING</small>
-<h1>经费管理系统正在启动</h1><p>正在加载本地数据，OCR 将在需要时启动。</p><div class='track'></div></div></body></html>"""
+body.failed .track:after{animation:none;width:100%;background:#ff5f67}body.failed small{color:#ff7a82}
+@keyframes run{to{transform:translateX(190%)}}</style><body class='__STATE__'><div class='box'><small>YANXIANG RACING</small>
+<h1>__TITLE__</h1><p>__MESSAGE__</p>__DETAIL__<div class='track'></div></div></body></html>"""
+
+
+def startup_page(
+    message: str = "正在加载本地数据，OCR 将在需要时启动。",
+    *,
+    failed: bool = False,
+    log_path: Path | None = None,
+) -> str:
+    detail = ""
+    if log_path is not None:
+        detail = f"<p class='detail'>诊断日志：{html.escape(str(log_path))}</p>"
+    return (
+        STARTUP_TEMPLATE
+        .replace("__STATE__", "failed" if failed else "")
+        .replace("__TITLE__", "启动失败" if failed else "经费管理系统正在启动")
+        .replace("__MESSAGE__", html.escape(message))
+        .replace("__DETAIL__", detail)
+    )
+
+
+STARTUP_HTML = startup_page()
+
+
+def configure_startup_logging(runtime_home: Path) -> tuple[logging.Logger, Path]:
+    log_dir = runtime_home / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_path = log_dir / "startup.log"
+    logger = logging.getLogger("yxrt")
+    logger.setLevel(logging.INFO)
+    logger.propagate = False
+    resolved = str(log_path.resolve()).casefold()
+    if not any(
+        isinstance(handler, RotatingFileHandler)
+        and str(Path(getattr(handler, "baseFilename", "")).resolve()).casefold() == resolved
+        for handler in logger.handlers
+    ):
+        handler = RotatingFileHandler(log_path, maxBytes=2 * 1024 * 1024, backupCount=3, encoding="utf-8")
+        handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s"))
+        logger.addHandler(handler)
+    return logger, log_path
 
 
 def open_edge_or_default(url: str) -> None:
@@ -103,6 +148,8 @@ def main() -> None:
     multiprocessing.freeze_support()
     runtime_home = RUNTIME_HOME
     runtime_home.mkdir(parents=True, exist_ok=True)
+    logger, log_path = configure_startup_logging(runtime_home)
+    logger.info("desktop startup version=%s executable=%s", __version__, sys.executable)
     # Keep model paths relative on Windows. Paddle's native runtime can fail
     # when an absolute model path contains Chinese characters.
     os.chdir(runtime_home)
@@ -115,12 +162,26 @@ def main() -> None:
     url = f"http://{host}:{port}"
 
     server: uvicorn.Server | None = None
+    server_thread: threading.Thread | None = None
+    startup_failure: list[str] = []
     service_ready = app_ready(host, port)
     if not service_ready:
         config = desktop_server_config(host, port)
         server = uvicorn.Server(config)
-        thread = threading.Thread(target=server.run, name="yxrt-web", daemon=True)
-        thread.start()
+
+        def run_server() -> None:
+            try:
+                logger.info("web service starting host=%s port=%s", host, port)
+                server.run()
+                if not server.started:
+                    startup_failure.append("本地服务未能完成启动")
+                    logger.error("web service stopped before startup completed")
+            except BaseException as exc:
+                startup_failure.append(f"{type(exc).__name__}: {exc}")
+                logger.exception("web service startup failed")
+
+        server_thread = threading.Thread(target=run_server, name="yxrt-web", daemon=True)
+        server_thread.start()
 
     try:
         import webview
@@ -130,7 +191,7 @@ def main() -> None:
         window = webview.create_window(
             f"燕翔车队经费管理系统 V{__version__}",
             url if service_ready else None,
-            html=None if service_ready else STARTUP_HTML,
+            html=None if service_ready else startup_page(),
             width=1460,
             height=920,
             min_size=(1024, 700),
@@ -142,15 +203,27 @@ def main() -> None:
 
         def finish_startup() -> None:
             if service_ready:
+                logger.info("reused ready service url=%s", url)
                 return
-            for _ in range(600):
+            for attempt in range(900):
                 if app_ready(host, port):
+                    logger.info("web service ready after %.1fs", attempt / 10)
                     window.load_url(url)
                     return
-                if server is not None and server.should_exit:
+                if startup_failure:
+                    window.load_html(startup_page(startup_failure[-1], failed=True, log_path=log_path))
                     return
+                if server_thread is not None and not server_thread.is_alive():
+                    message = "本地服务意外停止，请查看诊断日志。"
+                    logger.error(message)
+                    window.load_html(startup_page(message, failed=True, log_path=log_path))
+                    return
+                if attempt == 150:
+                    window.load_html(startup_page("正在升级本地数据库，数据较多时可能需要约 1 分钟，请勿强制关闭。"))
                 time.sleep(0.1)
-            window.load_html(STARTUP_HTML.replace("正在加载本地数据，OCR 将在需要时启动。", "启动超时，请检查安全软件后重试。"))
+            message = "启动超过 90 秒仍未完成。请关闭软件后重试，并将诊断日志交给管理员。"
+            logger.error(message)
+            window.load_html(startup_page(message, failed=True, log_path=log_path))
 
         webview.start(
             finish_startup,
@@ -160,6 +233,7 @@ def main() -> None:
             debug=False,
         )
     except Exception:
+        logger.exception("desktop window startup failed")
         open_edge_or_default(url)
         try:
             while True:

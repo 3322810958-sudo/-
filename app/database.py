@@ -3,6 +3,7 @@ from __future__ import annotations
 import gzip
 import hashlib
 import json
+import logging
 import sqlite3
 import threading
 import uuid
@@ -1060,6 +1061,7 @@ def seed_defaults(conn: sqlite3.Connection) -> None:
 
 
 def init_db() -> None:
+    logger = logging.getLogger("yxrt.database")
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     with DB_LOCK:
         conn = connect()
@@ -1072,7 +1074,9 @@ def init_db() -> None:
             except sqlite3.Error:
                 schema_row = None; stories_ready = None
             if schema_row and str(schema_row[0]) == "8" and stories_ready:
+                logger.info("database ready schema_version=8 path=%s", DB_PATH)
                 return
+            logger.info("database migration started from=%s path=%s", schema_row[0] if schema_row else "unknown", DB_PATH)
             conn.executescript(SCHEMA)
             conn.execute("BEGIN IMMEDIATE")
             _migrate_season_schema(conn)
@@ -1082,8 +1086,10 @@ def init_db() -> None:
             seed_defaults(conn)
             _migrate_v23_schema(conn)
             conn.commit()
+            logger.info("database migration completed schema_version=8")
         except Exception:
             conn.rollback()
+            logger.exception("database initialization failed")
             raise
         finally:
             conn.close()

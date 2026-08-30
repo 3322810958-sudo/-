@@ -1,5 +1,5 @@
 ﻿param(
-  [string]$Version = "2.3.5",
+  [string]$Version = "2.3.6",
   [string]$PythonPath = "",
   [switch]$SkipBuild,
   [switch]$SkipTutorialPdf,
@@ -75,7 +75,9 @@ if (-not $PatchOnly) {
   Compress-Archive -Path (Join-Path $target "*") -DestinationPath $fullZip -CompressionLevel Optimal
 }
 New-Item -ItemType Directory -Path $patchStage -Force | Out-Null
-$deltaItems = @("燕翔车队经费管理系统.exe", "web", "README.md", "README_FIRST.txt", "CHANGELOG.md")
+# The executable and _internal runtime are one matched PyInstaller build.
+# Replacing only the EXE can leave it paired with an incompatible Python runtime.
+$deltaItems = @("燕翔车队经费管理系统.exe", "_internal", "web", "README.md", "README_FIRST.txt", "CHANGELOG.md")
 foreach ($name in $deltaItems) {
   $item = Join-Path $target $name
   if (Test-Path -LiteralPath $item) { Copy-Item -LiteralPath $item -Destination (Join-Path $patchStage $name) -Recurse -Force }
@@ -96,6 +98,7 @@ $patchManifest = [ordered]@{
   target_version = $Version
   compatible_from = "any-v2"
   data_policy = "preserve-or-restore-verified-backup"
+  runtime_bundle = "matched-pyinstaller-runtime"
   created_at = (Get-Date).ToUniversalTime().ToString("o")
   files = $manifestFiles
 }

@@ -3,13 +3,14 @@ from __future__ import annotations
 import io
 import sys
 import zipfile
+from pathlib import Path
 
 from fastapi.testclient import TestClient
 from pypdf import PdfWriter
 
 from app.main import app
 from app.database import transaction
-from app.desktop import desktop_server_config
+from app.desktop import desktop_server_config, startup_page
 from app.quality import record_issue, sync_ocr_issues
 from app.updater import UPDATE_REPOSITORY, _safe_asset_url
 from launcher import ensure_runtime_streams
@@ -123,6 +124,16 @@ def test_windowed_launcher_supplies_streams_and_disables_uvicorn_terminal_loggin
     config = desktop_server_config("127.0.0.1", 8765)
     assert config.log_config is None
     assert config.access_log is False
+
+
+def test_startup_failure_page_is_visible_and_patch_bundles_runtime():
+    page = startup_page("启动异常 <测试>", failed=True, log_path=Path("C:/Temp/startup.log"))
+    assert "启动失败" in page
+    assert "启动异常 &lt;测试&gt;" in page
+    assert "startup.log" in page
+    build_script = (Path(__file__).parents[1] / "scripts" / "build_release.ps1").read_text(encoding="utf-8-sig")
+    assert '"_internal"' in build_script
+    assert 'runtime_bundle = "matched-pyinstaller-runtime"' in build_script
 
 
 def test_successful_ocr_closes_previous_failure_issues():
