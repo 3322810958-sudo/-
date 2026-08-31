@@ -4,9 +4,10 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#07101b">
-  <title>燕翔车队经费管理系统 V2.3.8</title>
+  <title>燕翔车队经费管理系统 V2.3.9</title>
   <link rel="icon" href="/static/assets/team-logo.png">
-  <link rel="stylesheet" href="/static/app.css?v=2.3.8">
+  <link rel="stylesheet" href="/static/app.css?v=2.3.9">
+  <link rel="stylesheet" href="/static/nas.css?v=2.3.9">
 </head>
 <body>
   <div id="backgroundLayer" class="background-layer"><video id="appBackgroundVideo" muted loop autoplay playsinline></video></div>
@@ -35,7 +36,7 @@
       <div class="login-brand">
         <img src="/static/assets/team-logo.png" alt="燕翔车队队标">
         <div>
-          <p class="eyebrow">赛车运营 · V2.3.8</p>
+          <p class="eyebrow">赛车运营 · V2.3.9</p>
           <h1><span id="loginTeamName">燕翔车队</span><br><span>经费管理系统</span></h1>
         </div>
       </div>
@@ -86,7 +87,7 @@
         <div id="syncLamp" class="status-lamp"></div>
         <div><strong id="syncLabel">本地模式</strong><small id="syncDetail">数据安全保存在本机</small></div>
       </div>
-      <div class="sidebar-foot"><span>燕翔车队经费</span><span id="versionLabel">V2.3.8</span></div>
+      <div class="sidebar-foot"><span>燕翔车队经费</span><span id="versionLabel">V2.3.9</span></div>
     </aside>
 
     <div class="content-shell">
@@ -214,7 +215,7 @@
             <article class="panel setting-card" data-admin><div class="setting-icon">默认</div><div><h3>录入与批量导入默认值</h3><p>配置默认分类、成员、资金来源、承担方式与批次备注。</p><button id="openInvoiceDefaultsBtn" class="btn secondary">配置默认值</button></div></article>
             <article class="panel setting-card" data-admin><div class="setting-icon">壁纸</div><div><h3>界面、壁纸与登录轮播</h3><p>连接 Wallpaper Engine，或上传图片、动图和视频。</p><button id="openAppearanceBtn" class="btn secondary">配置界面</button></div></article>
             <article class="panel setting-card" data-admin><div class="setting-icon">分类</div><div><h3>发票智能分类</h3><p>编辑离线关键词规则，并结合商家历史选择自动学习。</p><button id="openClassificationBtn" class="btn secondary">管理识别规则</button></div></article>
-            <article class="panel setting-card" data-admin><div class="setting-icon">AI</div><div><h3>AI 接插件与 NAS 预留</h3><p>配置本地、国内、国外兼容接口和 NAS 连接；当前不参与离线发票识别。</p><button id="openIntegrationsBtn" class="btn secondary">配置接插件</button></div></article>
+            <article class="panel setting-card" data-admin><div class="setting-icon">AI</div><div><h3>AI 接插件与 NAS 集中备份</h3><p>配置兼容 AI 接口；管理员可向 Windows 共享盘手动上传和恢复完整备份。</p><button id="openIntegrationsBtn" class="btn secondary">配置接插件与 NAS</button></div></article>
             <article class="panel setting-card" data-admin><div class="setting-icon">↕</div><div><h3>云端自动同步</h3><p id="syncSettingText">未配置云端服务器。</p><button id="openSyncBtn" class="btn secondary">配置同步</button></div></article>
             <article class="panel setting-card" data-admin><div class="setting-icon">备份</div><div><h3>备份与恢复</h3><p>完整保留全部赛季、人员、组别、账号、发票和附件，并附可查看清单。</p><div class="inline-actions"><button id="downloadBackupBtn" type="button" class="btn secondary">下载完整备份</button><label class="btn danger subtle">恢复备份<input id="restoreBackupInput" type="file" accept=".zip" hidden></label></div></div></article>
             <article class="panel setting-card" data-admin><div class="setting-icon">演示</div><div><h3>演示数据</h3><p>只清除初始演示记录，不影响正式数据。</p><button id="deleteDemoBtn" class="btn danger subtle">清除演示数据</button></div></article>
@@ -441,10 +442,10 @@
 
   <dialog id="integrationsDialog" class="modal large-modal">
     <div class="modal-card">
-      <header><div><p class="eyebrow">扩展接口</p><h3>AI 接插件与 NAS 预留</h3></div><button type="button" class="dialog-close" data-close="integrationsDialog">×</button></header>
+      <header><div><p class="eyebrow">扩展接口</p><h3>AI 接插件与 NAS 集中备份</h3></div><button type="button" class="dialog-close" data-close="integrationsDialog">×</button></header>
       <div class="integration-layout">
         <section class="appearance-pane"><div class="appearance-heading"><div><b>AI 接插件</b><small>本地优先；暂不参与当前离线 OCR</small></div><button id="addAiConnectorBtn" class="btn secondary" type="button">＋ 添加接口</button></div><div id="aiConnectorList" class="ai-connector-list"></div><button id="saveAiConnectorsBtn" class="btn primary" type="button">保存 AI 配置</button></section>
-        <section class="appearance-pane"><div class="appearance-heading"><div><b>NAS 连接预留</b><small>仅保存配置与测试连接，不同步任何文件</small></div></div><form id="nasForm"><label class="switch-row"><span><b>启用配置</b><small>不会自动上传</small></span><input id="nasEnabled" type="checkbox"></label><div class="form-grid two"><label><span>方式</span><select id="nasProtocol"><option value="local">本机/映射盘</option><option value="smb">Windows SMB 共享</option><option value="webdav">WebDAV</option></select></label><label><span>账号</span><input id="nasUsername" autocomplete="off"></label></div><label class="full-label"><span>目录或地址</span><input id="nasLocation" placeholder="例如：Z:\\燕翔车队 或 https://nas.example/dav"></label><label class="full-label"><span>密码</span><input id="nasPassword" type="password" autocomplete="new-password" placeholder="已配置时留空即可保留"></label><div id="nasStatus" class="sync-dialog-status">尚未测试</div><div class="inline-actions"><button id="testNasBtn" type="button" class="btn secondary">测试连接</button><button class="btn primary">保存 NAS 配置</button></div></form></section>
+        <section class="appearance-pane"><div class="appearance-heading"><div><b>NAS 集中备份</b><small>管理员手动上传完整备份；账目数据库仍安全保存在本机</small></div></div><form id="nasForm"><label class="switch-row"><span><b>启用 NAS 备份</b><small>不会自动上传或覆盖本机数据</small></span><input id="nasEnabled" type="checkbox"></label><div class="form-grid two"><label><span>方式</span><select id="nasProtocol"><option value="local">本机/映射盘</option><option value="smb">Windows SMB 共享</option><option value="webdav">WebDAV（仅测试）</option></select></label><label><span>账号（仅 WebDAV）</span><input id="nasUsername" autocomplete="off" placeholder="映射盘由 Windows 管理权限"></label></div><label class="full-label"><span>共享目录</span><input id="nasLocation" placeholder="Z:\\燕翔车队经费系统 或 \\\\Yxrt-nas\\yxrt\\燕翔车队经费系统"></label><label class="full-label"><span>密码（仅 WebDAV）</span><input id="nasPassword" type="password" autocomplete="new-password" placeholder="映射盘无需填写；已配置时留空可保留"></label><div id="nasStatus" class="sync-dialog-status">尚未测试</div><div class="inline-actions"><button id="testNasBtn" type="button" class="btn secondary">测试连接</button><button class="btn primary">保存配置</button><button id="nasBackupNowBtn" type="button" class="btn primary">上传完整备份</button><button id="nasRefreshBtn" type="button" class="btn secondary">刷新备份列表</button></div></form><div id="nasBackupList" class="nas-backup-list"><div class="empty-state">保存配置后可查看 NAS 中的完整备份。</div></div><p class="nas-safety-note">恢复前系统会先在本机建立保护备份；恢复完成后需要重新登录。</p></section>
       </div>
       <footer><button type="button" class="btn primary" data-close="integrationsDialog">完成</button></footer>
     </div>
@@ -487,7 +488,7 @@
   <dialog id="updateDialog" class="modal">
     <div class="modal-card">
       <header><div><p class="eyebrow">版本管理</p><h3>更新日志与自动更新</h3></div><button type="button" class="dialog-close" data-close="updateDialog">×</button></header>
-      <div class="update-current"><div><span>当前版本</span><strong id="updateCurrentVersion">V2.3.8</strong></div><label class="mini-switch"><input id="autoUpdateCheck" type="checkbox" checked><span>启动后自动检查</span></label></div>
+      <div class="update-current"><div><span>当前版本</span><strong id="updateCurrentVersion">V2.3.9</strong></div><label class="mini-switch"><input id="autoUpdateCheck" type="checkbox" checked><span>启动后自动检查</span></label></div>
       <label class="update-mode-choice"><span>更新方式</span><select id="updateInstallMode"><option value="auto">自动完整备份并更新（推荐）</option><option value="manual">手动下载补丁包并覆盖</option></select><small id="updateModeHint">安装前自动备份全部赛季、人员、组别、账号、发票与附件，再重启更新。</small></label>
       <div class="update-actions"><button id="checkUpdateBtn" type="button" class="btn secondary">检查 GitHub 新版本</button><a id="updateReleaseLink" class="btn secondary hidden" target="_blank" rel="noopener">查看发布页面</a><button id="installUpdateBtn" type="button" class="btn primary hidden">一键更新到最新版</button></div>
       <div id="updateStatus" class="update-status">正在读取本地更新日志……</div>
@@ -563,6 +564,6 @@
       <small id="loadingDetail">任务正在本机运行，请勿关闭软件</small>
     </div>
   </div>
-  <script src="/static/app.js?v=2.3.8"></script>
+  <script src="/static/app.js?v=2.3.9"></script>
 </body>
 </html>

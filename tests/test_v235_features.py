@@ -18,6 +18,7 @@ def test_public_story_mode_admin_import_publish_and_snapshot_restore(tmp_path):
 
         _, headers = login(client, "admin", "YXRT@2026")
         season_id = client.get("/api/bootstrap").json()["season"]["id"]
+        baseline_story_count = len(client.get("/api/stories?include_drafts=1").json()["items"])
         snapshot = client.post("/api/admin/snapshots", json={"label": "故事前"}, headers=headers)
         assert snapshot.status_code == 200
         created = client.post(
@@ -61,7 +62,7 @@ def test_public_story_mode_admin_import_publish_and_snapshot_restore(tmp_path):
 
         restored = client.post(f"/api/admin/snapshots/{snapshot.json()['id']}/restore", headers=headers)
         assert restored.status_code == 200, restored.text
-        assert restored.json()["restored"]["stories"] == 0
+        assert restored.json()["restored"]["stories"] == baseline_story_count
         with TestClient(app) as visitor:
             assert all(item["id"] != story_id for item in visitor.get("/api/stories").json()["items"])
 

@@ -2,9 +2,13 @@ from __future__ import annotations
 
 import base64
 import ctypes
+import hashlib
 import json
 import os
+import shutil
+import uuid
 from ctypes import wintypes
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
@@ -123,7 +127,7 @@ def test_ai_connection(connector: dict[str, Any], secret: str = "") -> dict[str,
         raise IntegrationError("请先填写 AI 服务地址")
     kind = connector.get("kind")
     endpoint = f"{base_url}/api/tags" if kind == "ollama" else f"{base_url}/v1/models"
-    headers = {"Accept": "application/json", "User-Agent": "YXRT-Money-App/2.3.8"}
+    headers = {"Accept": "application/json", "User-Agent": "YXRT-Money-App/2.3.9"}
     if secret:
         headers["Authorization"] = f"Bearer {secret}"
     try:
@@ -151,9 +155,9 @@ def test_nas_connection(config: dict[str, Any], password: str = "") -> dict[str,
         path = Path(location)
         if not path.is_dir():
             raise IntegrationError("无法访问该目录，请检查路径、网络和 Windows 权限")
-        return {"ok": True, "message": "目录连接成功；当前版本仅完成接口预留，不会自动同步"}
+        return {"ok": True, "message": "目录连接成功，可由管理员手动上传完整备份和恢复"}
     token = base64.b64encode(f"{config.get('username', '')}:{password}".encode("utf-8")).decode("ascii")
-    headers = {"User-Agent": "YXRT-Money-App/2.3.8"}
+    headers = {"User-Agent": "YXRT-Money-App/2.3.9"}
     if config.get("username") or password:
         headers["Authorization"] = f"Basic {token}"
     try:
@@ -164,4 +168,92 @@ def test_nas_connection(config: dict[str, Any], password: str = "") -> dict[str,
         raise IntegrationError(f"WebDAV 返回错误：HTTP {exc.code}") from exc
     except (URLError, TimeoutError, OSError) as exc:
         raise IntegrationError(f"无法连接 WebDAV：{exc}") from exc
-    return {"ok": True, "message": f"WebDAV 连接成功（HTTP {response.status}）；当前版本不会自动同步"}
+    return {"ok": True, "message": f"WebDAV 连接成功（HTTP {response.status}）；手动完整备份暂请使用映射盘或 SMB 共享"}
+
+
+def _nas_directory(config: dict[str, Any], *, create: bool = False) -> Path:
+    if config.get("protocol") not in {"local", "smb"}:
+        raise IntegrationError("当前手动完整备份请使用本机/映射盘或 Windows SMB 共享")
+    location = str(config.get("location") or "").strip()
+    if not location:
+        raise IntegrationError("请先填写 NAS 共享目录")
+    path = Path(location).expanduser()
+    if create:
+        try:
+            path.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            raise IntegrationError(f"无法创建或访问 NAS 目录：{exc}") from exc
+    if not path.is_dir():
+        raise IntegrationError("无法访问 NAS 目录，请检查共享盘映射、网络和 Windows 权限")
+    return path
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        while chunk := source.read(4 * 1024 * 1024):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def store_nas_backup(config: dict[str, Any], source_path: Path, target_name: str) -> dict[str, Any]:
+    directory = _nas_directory(config, create=True)
+    safe_name = Path(str(target_name)).name
+    if safe_name != str(target_name) or not safe_name.startswith("燕翔车队") or Path(safe_name).suffix.lower() != ".zip":
+        raise IntegrationError("NAS 备份文件名不正确")
+    target = directory / safe_name
+    partial = directory / f".{safe_name}.{uuid.uuid4().hex}.partial"
+    try:
+        with source_path.open("rb") as source, partial.open("xb") as output:
+            shutil.copyfileobj(source, output, length=4 * 1024 * 1024)
+            output.flush()
+            try:
+                os.fsync(output.fileno())
+            except OSError:
+                pass
+        if partial.stat().st_size != source_path.stat().st_size or _sha256_file(partial) != _sha256_file(source_path):
+            raise IntegrationError("NAS 备份上传后校验失败，未替换正式文件")
+        partial.replace(target)
+    except (OSError, IntegrationError) as exc:
+        partial.unlink(missing_ok=True)
+        if isinstance(exc, IntegrationError):
+            raise
+        raise IntegrationError(f"NAS 备份写入失败：{exc}") from exc
+    stat = target.stat()
+    return {
+        "filename": target.name,
+        "size": stat.st_size,
+        "sha256": _sha256_file(target),
+        "modified_at": datetime.fromtimestamp(stat.st_mtime, UTC).isoformat(timespec="seconds").replace("+00:00", "Z"),
+    }
+
+
+def list_nas_backups(config: dict[str, Any]) -> list[dict[str, Any]]:
+    directory = _nas_directory(config)
+    items: list[dict[str, Any]] = []
+    try:
+        candidates = sorted(
+            (path for path in directory.iterdir() if path.is_file() and path.name.startswith("燕翔车队") and path.suffix.lower() == ".zip"),
+            key=lambda path: path.stat().st_mtime,
+            reverse=True,
+        )[:100]
+        for path in candidates:
+            stat = path.stat()
+            items.append({
+                "filename": path.name,
+                "size": stat.st_size,
+                "modified_at": datetime.fromtimestamp(stat.st_mtime, UTC).isoformat(timespec="seconds").replace("+00:00", "Z"),
+            })
+    except OSError as exc:
+        raise IntegrationError(f"无法读取 NAS 备份列表：{exc}") from exc
+    return items
+
+
+def resolve_nas_backup(config: dict[str, Any], filename: str) -> Path:
+    safe_name = Path(str(filename)).name
+    if safe_name != str(filename) or not safe_name.startswith("燕翔车队") or Path(safe_name).suffix.lower() != ".zip":
+        raise IntegrationError("NAS 备份文件名不正确")
+    path = _nas_directory(config) / safe_name
+    if not path.is_file():
+        raise IntegrationError("所选 NAS 备份不存在或暂时无法访问")
+    return path

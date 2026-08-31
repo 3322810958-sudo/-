@@ -1,0 +1,33 @@
+.nas-backup-list {
+  display: grid;
+  gap: 7px;
+  max-height: 300px;
+  margin-top: 13px;
+  overflow: auto;
+}
+
+.nas-backup-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  padding: 11px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--item-bg);
+}
+
+.nas-backup-item b,
+.nas-backup-item small {
+  display: block;
+  overflow-wrap: anywhere;
+}
+
+.nas-backup-item b { font-size: 9px; }
+.nas-backup-item small { margin-top: 5px; color: var(--muted); font-size: 8px; }
+.nas-safety-note { margin: 10px 0 0; color: var(--muted); font-size: 8px; line-height: 1.6; }
+
+@media (max-width: 560px) {
+  .nas-backup-item { grid-template-columns: 1fr; }
+  .nas-backup-item .btn { justify-self: start; }
+}

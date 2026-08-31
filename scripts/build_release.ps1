@@ -1,5 +1,5 @@
 ﻿param(
-  [string]$Version = "2.3.8",
+  [string]$Version = "2.3.9",
   [string]$PythonPath = "",
   [switch]$SkipBuild,
   [switch]$SkipTutorialPdf,

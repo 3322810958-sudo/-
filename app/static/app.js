@@ -13,7 +13,7 @@ const state = {
   shortcuts: {}, shortcutDraft: {},
   loadingTimer: null, loadingProgress: 0, loadingToken: 0, updateRelease: null,
   currentInvoicePreview: null, batchPreviewFiles: [], attachmentViewerZoom: 1,
-  version: "2.3.8", updateJobId: "", qualityIssues: [], openSourceReferences: [],
+  version: "2.3.9", updateJobId: "", qualityIssues: [], openSourceReferences: [],
   supportingAttachments: [], batchReviewIds: [], userPreferences: {}, personalAudio: [], audioIndex: -1,
   draftHistory: [], draftHistoryIndex: -1, draftHistoryTimer: null, activeDraftForm: null,
   lastOcrResult: null, patchReleases: [],
@@ -521,7 +521,7 @@ function applyTheme() {
     if (video.getAttribute("src") !== mediaUrl) video.src = mediaUrl;
     video.classList.add("active"); video.play().catch(() => {});
   } else { video.pause(); video.removeAttribute("src"); video.load(); video.classList.remove("active"); }
-  document.title = `${settings.team_name || "燕翔车队"} · 经费管理系统 V${state.version || "2.3.8"}`;
+  document.title = `${settings.team_name || "燕翔车队"} · 经费管理系统 V${state.version || "2.3.9"}`;
 }
 
 function applyAccess() {
@@ -574,7 +574,7 @@ async function loadBootstrap() {
   state.settings = data.settings || {};
   state.dashboard = data.dashboard;
   state.sync = data.sync || {};
-  state.version = data.version || "2.3.8";
+  state.version = data.version || "2.3.9";
   state.qualityIssues = data.quality_issues || [];
   state.openSourceReferences = data.open_source_references || [];
   state.userPreferences = data.user_preferences || {};
@@ -1852,6 +1852,7 @@ async function openIntegrations() {
   try {
     const result = await api("/api/admin/integrations"); state.aiConnectors = result.ai || []; state.nasConfig = result.nas || {}; renderAiConnectors();
     $("nasEnabled").checked = Boolean(state.nasConfig.enabled); $("nasProtocol").value = state.nasConfig.protocol || "local"; $("nasLocation").value = state.nasConfig.location || ""; $("nasUsername").value = state.nasConfig.username || ""; $("nasPassword").value = ""; $("nasPassword").placeholder = state.nasConfig.has_secret ? "已本机加密，留空保留" : "可留空"; $("nasStatus").textContent = result.notice || "尚未测试"; $("integrationsDialog").showModal();
+    if (state.nasConfig.enabled) await loadNasBackups(true);
   } catch (error) { toast(error.message, "error"); }
 }
 
@@ -1873,8 +1874,14 @@ async function testAiConnector(index) {
 }
 
 function nasPayload() { return { enabled: $("nasEnabled").checked, protocol: $("nasProtocol").value, location: $("nasLocation").value, username: $("nasUsername").value, password: $("nasPassword").value }; }
-async function saveNas(event) { event.preventDefault(); try { const result = await api("/api/admin/integrations/nas", { method: "PUT", body: nasPayload() }); state.nasConfig = result.nas || {}; $("nasPassword").value = ""; $("nasPassword").placeholder = state.nasConfig.has_secret ? "已本机加密，留空保留" : "可留空"; $("nasStatus").textContent = "配置已保存；不会自动同步"; toast("NAS 预留配置已保存"); } catch (error) { $("nasStatus").textContent = error.message; } }
+async function saveNas(event) { event.preventDefault(); try { const result = await api("/api/admin/integrations/nas", { method: "PUT", body: nasPayload() }); state.nasConfig = result.nas || {}; $("nasPassword").value = ""; $("nasPassword").placeholder = state.nasConfig.has_secret ? "已本机加密，留空保留" : "可留空"; $("nasStatus").textContent = "配置已保存；完整备份仅在管理员点击时上传"; toast("NAS 集中备份配置已保存"); if (state.nasConfig.enabled) await loadNasBackups(true); } catch (error) { $("nasStatus").textContent = error.message; } }
 async function testNas() { $("nasStatus").textContent = "正在测试连接……"; try { const result = await api("/api/admin/integrations/nas/test", { method: "POST", body: nasPayload() }); $("nasStatus").textContent = result.message; } catch (error) { $("nasStatus").textContent = error.message; } }
+
+function nasFileSize(value) { const bytes = Number(value || 0); if (bytes < 1024) return `${bytes} B`; if (bytes < 1024 ** 2) return `${(bytes / 1024).toFixed(1)} KB`; if (bytes < 1024 ** 3) return `${(bytes / 1024 ** 2).toFixed(1)} MB`; return `${(bytes / 1024 ** 3).toFixed(2)} GB`; }
+function renderNasBackups(items) { $("nasBackupList").innerHTML = items.map((item) => `<article class="nas-backup-item"><div><b>${escapeHtml(item.filename)}</b><small>${escapeHtml(String(item.modified_at || "").replace("T", " ").replace("Z", ""))} · ${nasFileSize(item.size)}</small></div><button type="button" class="btn secondary" data-nas-restore="${escapeHtml(item.filename)}">恢复此备份</button></article>`).join("") || `<div class="empty-state">该共享目录中还没有本系统的完整备份。</div>`; }
+async function loadNasBackups(silent = false) { try { const result = await api("/api/admin/integrations/nas/backups"); renderNasBackups(result.items || []); if (!silent) $("nasStatus").textContent = `已找到 ${(result.items || []).length} 个完整备份`; } catch (error) { renderNasBackups([]); $("nasStatus").textContent = error.message; if (!silent) toast(error.message, "error"); } }
+async function backupToNas() { if (!await confirmAction("系统将生成包含全部赛季、人员、组别、账号、发票、附件和设置的完整备份，并上传到已保存的 NAS 目录。", { title: "上传完整备份", confirmText: "生成并上传", tone: "info" })) return; loading(true, "正在生成并校验 NAS 完整备份"); try { const result = await api("/api/admin/integrations/nas/backup", { method: "POST", body: {} }); $("nasStatus").textContent = `${result.message} · ${nasFileSize(result.size)}`; toast(result.message); await loadNasBackups(true); } catch (error) { $("nasStatus").textContent = error.message; toast(error.message, "error", 6000); } finally { loading(false); } }
+async function restoreNasBackup(filename) { if (!await confirmAction(`将恢复“${filename}”中的全部账号、赛季、经费数据、附件和设置。恢复前会先在本机建立保护备份。`, { title: "恢复 NAS 完整备份", confirmText: "恢复并重新登录", tone: "danger" })) return; loading(true, "正在校验并恢复 NAS 完整备份"); try { const result = await api("/api/admin/integrations/nas/restore", { method: "POST", body: { filename } }); toast(result.message); window.setTimeout(() => location.href = "/", 900); } catch (error) { $("nasStatus").textContent = error.message; toast(error.message, "error", 7000); loading(false); } }
 
 function resetClassificationEditor() {
   $("classificationRuleForm").reset(); $("classificationRuleId").value = ""; $("classificationRulePriority").value = "100"; $("classificationRuleActive").checked = true; $("classificationRuleSaveBtn").textContent = "添加规则";
@@ -2343,7 +2350,8 @@ function setupEvents() {
   $("openClassificationBtn").addEventListener("click", openClassification); $("classificationRuleForm").addEventListener("submit", saveClassificationRule); $("newRuleBtn").addEventListener("click", resetClassificationEditor); $("resetRulesBtn").addEventListener("click", resetClassificationRules);
   $("classificationRuleList").addEventListener("click", (event) => { const edit = event.target.closest("[data-rule-edit]"), remove = event.target.closest("[data-rule-delete]"); if (edit) editClassificationRule(edit.dataset.ruleEdit); if (remove) deleteClassificationRule(remove.dataset.ruleDelete); });
   $("openSyncBtn").addEventListener("click", openSync); $("syncForm").addEventListener("submit", saveSync); $("syncNowBtn").addEventListener("click", syncNow);
-  $("openIntegrationsBtn").addEventListener("click", openIntegrations); $("addAiConnectorBtn").addEventListener("click", addAiConnector); $("saveAiConnectorsBtn").addEventListener("click", saveAiConnectors); $("nasForm").addEventListener("submit", saveNas); $("testNasBtn").addEventListener("click", testNas);
+  $("openIntegrationsBtn").addEventListener("click", openIntegrations); $("addAiConnectorBtn").addEventListener("click", addAiConnector); $("saveAiConnectorsBtn").addEventListener("click", saveAiConnectors); $("nasForm").addEventListener("submit", saveNas); $("testNasBtn").addEventListener("click", testNas); $("nasBackupNowBtn").addEventListener("click", backupToNas); $("nasRefreshBtn").addEventListener("click", () => loadNasBackups());
+  $("nasBackupList").addEventListener("click", (event) => { const button = event.target.closest("[data-nas-restore]"); if (button) restoreNasBackup(button.dataset.nasRestore); });
   $("aiConnectorList").addEventListener("click", (event) => { const remove = event.target.closest("[data-ai-remove]"), test = event.target.closest("[data-ai-test]"); if (remove) { state.aiConnectors = aiConnectorDrafts(); state.aiConnectors.splice(Number(remove.dataset.aiRemove), 1); renderAiConnectors(); } if (test) testAiConnector(Number(test.dataset.aiTest)); });
   $("downloadBackupBtn").addEventListener("click", downloadBackup); $("restoreBackupInput").addEventListener("change", (event) => restoreBackup(event.target.files[0])); $("deleteDemoBtn").addEventListener("click", deleteDemo); $("clearCurrentSeasonBtn").addEventListener("click", clearCurrentSeasonData);
   $("openUpdateBtn").addEventListener("click", openUpdateDialog); $("checkUpdateBtn").addEventListener("click", () => checkForUpdates(true)); $("installUpdateBtn").addEventListener("click", () => installLatestUpdate());

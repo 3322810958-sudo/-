@@ -14,6 +14,7 @@ from typing import Any, Iterator
 
 from .config import DB_PATH, DEVICE_LABEL
 from .security import hash_password
+from .story_history import HISTORICAL_STORIES
 
 
 DB_LOCK = threading.RLock()
@@ -672,6 +673,33 @@ def _migrate_v23_schema(conn: sqlite3.Connection) -> None:
         )
 
 
+def seed_historical_stories(conn: sqlite3.Connection) -> int:
+    """Add curated public history once without overwriting administrator edits."""
+    now = utc_now()
+    device_id = get_device_id(conn)
+    colors = ("#df422f", "#0d8fa8", "#b97823", "#4969a8")
+    inserted = 0
+    for index, item in enumerate(HISTORICAL_STORIES):
+        result = conn.execute(
+            """INSERT OR IGNORE INTO stories(
+            id,season_id,title,summary,body,author_name,published_date,layout_style,
+            accent_color,published,sort_order,created_by,created_at,updated_at,version,device_id,deleted_at
+            ) VALUES(?,?,?,?,?,?,?,?,?,1,?,NULL,?,?,1,?,NULL)""",
+            (
+                item["id"], DEFAULT_SEASON_ID, item["title"], item["summary"], item["body"],
+                "燕翔车队历史资料整理", item["published_date"], item["layout_style"],
+                colors[index % len(colors)], index, now, now, device_id,
+            ),
+        )
+        inserted += int(result.rowcount or 0)
+    return inserted
+
+
+def _migrate_v239_schema(conn: sqlite3.Connection) -> None:
+    seed_historical_stories(conn)
+    conn.execute("INSERT OR REPLACE INTO meta(key,value) VALUES('schema_version','9')")
+
+
 def audit(
     conn: sqlite3.Connection,
     user_id: str | None,
@@ -726,7 +754,7 @@ def row_dict(conn: sqlite3.Connection, table: str, entity_id: str, id_column: st
 def snapshot_state(conn: sqlite3.Connection) -> dict[str, Any]:
     season_id = current_season_id(conn)
     state: dict[str, Any] = {
-        "schema_version": 8,
+        "schema_version": 9,
         "season_id": season_id,
         "captured_at": utc_now(),
         "tables": {},
@@ -1073,8 +1101,8 @@ def init_db() -> None:
                 ).fetchone()
             except sqlite3.Error:
                 schema_row = None; stories_ready = None
-            if schema_row and str(schema_row[0]) == "8" and stories_ready:
-                logger.info("database ready schema_version=8 path=%s", DB_PATH)
+            if schema_row and str(schema_row[0]) == "9" and stories_ready:
+                logger.info("database ready schema_version=9 path=%s", DB_PATH)
                 return
             logger.info("database migration started from=%s path=%s", schema_row[0] if schema_row else "unknown", DB_PATH)
             conn.executescript(SCHEMA)
@@ -1085,8 +1113,9 @@ def init_db() -> None:
                 conn.execute("ALTER TABLE ocr_jobs ADD COLUMN invoice_id TEXT REFERENCES invoices(id) ON DELETE SET NULL")
             seed_defaults(conn)
             _migrate_v23_schema(conn)
+            _migrate_v239_schema(conn)
             conn.commit()
-            logger.info("database migration completed schema_version=8")
+            logger.info("database migration completed schema_version=9")
         except Exception:
             conn.rollback()
             logger.exception("database initialization failed")

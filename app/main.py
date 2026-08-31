@@ -88,9 +88,12 @@ from .database import (
 from .feedback import deliver_feedback
 from .integrations import (
     IntegrationError,
+    list_nas_backups,
     normalize_ai_connectors,
     normalize_nas_config,
     protect_secret,
+    resolve_nas_backup,
+    store_nas_backup,
     test_ai_connection,
     test_nas_connection,
     unprotect_secret,
@@ -134,7 +137,7 @@ def _default_login_info_items(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     credits += "\n鸣谢：PaddleOCR、pypdf、pywebview、Tabler 等开源项目"
     return [
         {"id": "credits", "type": "credits", "title": "创作者与鸣谢", "content": credits, "visible": True},
-        {"id": "updates", "type": "updates", "title": "V2.3.8 本次更新", "content": "修复窗口启动后服务线程被阻塞；默认使用 Windows Edge 应用窗口模式；保持登录背景视频与全部数据不变。", "visible": True},
+        {"id": "updates", "type": "updates", "title": "V2.3.9 本次更新", "content": "车队故事加入公开历史时间线和来源链接；NAS 支持管理员手动上传、校验、查看和恢复完整备份。", "visible": True},
         {"id": "season_total", "type": "total", "title": "当前赛季记款总金额", "content": "", "visible": True},
         {"id": "motto", "type": "motto", "title": "队训", "content": "脚踏实地、精益求精", "visible": True},
         {"id": "philosophy", "type": "philosophy", "title": "造车理念", "content": "品质、精致、极致", "visible": True},
@@ -314,6 +317,11 @@ def _story_payload(conn: sqlite3.Connection, row: sqlite3.Row | dict[str, Any]) 
         asset["download_url"] = f"/api/stories/assets/{asset['id']}?download=1"
     item["assets"] = assets
     item["published"] = bool(item.get("published"))
+    item["period_label"] = (
+        f"{str(item.get('published_date') or '')[:4]} · 车队历史"
+        if str(item.get("id") or "").startswith("story_history_")
+        else str(item.get("season_name") or "")
+    )
     return item
 
 
@@ -2654,7 +2662,18 @@ def _integration_settings(conn: sqlite3.Connection) -> dict[str, Any]:
     except (json.JSONDecodeError, IntegrationError):
         nas = normalize_nas_config({})
     nas["has_secret"] = bool(setting(conn, "nas_secret", ""))
-    return {"ai": ai, "nas": nas, "notice": "AI 暂不参与发票识别；NAS 仅预留连接配置，不执行同步。"}
+    return {"ai": ai, "nas": nas, "notice": "AI 暂不参与发票识别；NAS 由管理员手动上传完整备份，不自动改写本机数据库。"}
+
+
+def _saved_nas_config() -> dict[str, Any]:
+    with connect() as conn:
+        try:
+            config = normalize_nas_config(json.loads(setting(conn, "nas_config", "{}")))
+        except (json.JSONDecodeError, IntegrationError) as exc:
+            raise IntegrationError("保存的 NAS 配置已损坏，请重新保存") from exc
+    if not config.get("enabled"):
+        raise IntegrationError("请先启用并保存 NAS 集中备份")
+    return config
 
 
 @app.get("/api/admin/integrations")
@@ -2749,6 +2768,60 @@ async def integrations_nas_test(payload: dict[str, Any], request: Request) -> di
         return await asyncio.to_thread(test_nas_connection, clean, password)
     except IntegrationError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/api/admin/integrations/nas/backups")
+async def integrations_nas_backups(request: Request) -> dict[str, Any]:
+    auth = get_auth(request)
+    require_admin(auth)
+    try:
+        items = await asyncio.to_thread(list_nas_backups, _saved_nas_config())
+    except IntegrationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"items": items}
+
+
+@app.post("/api/admin/integrations/nas/backup")
+async def integrations_nas_backup(request: Request) -> dict[str, Any]:
+    auth = get_auth(request)
+    require_csrf(request, auth)
+    require_admin(auth)
+    try:
+        config = _saved_nas_config()
+    except IntegrationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    path = await asyncio.to_thread(_create_backup_archive)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    target_name = f"燕翔车队经费完整备份_V{__version__}_{timestamp}.zip"
+    try:
+        result = await asyncio.to_thread(store_nas_backup, config, path, target_name)
+    except IntegrationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    finally:
+        path.unlink(missing_ok=True)
+    with transaction() as conn:
+        audit(conn, auth.user["id"], "backup", "nas", result["filename"], {"size": result["size"], "sha256": result["sha256"]})
+    return {"ok": True, "message": "完整备份已上传 NAS 并通过校验", **result}
+
+
+@app.post("/api/admin/integrations/nas/restore")
+async def integrations_nas_restore(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    auth = get_auth(request)
+    require_csrf(request, auth)
+    require_admin(auth)
+    fd, temp_name = tempfile.mkstemp(prefix="yxrt_nas_restore_", suffix=".zip", dir=TMP_DIR)
+    os.close(fd)
+    temp_path = Path(temp_name)
+    try:
+        path = resolve_nas_backup(_saved_nas_config(), str(payload.get("filename") or ""))
+        await asyncio.to_thread(shutil.copy2, path, temp_path)
+        await asyncio.to_thread(_restore_backup, temp_path, auth.user["id"])
+    except (IntegrationError, ValueError, OSError, zipfile.BadZipFile, json.JSONDecodeError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    finally:
+        temp_path.unlink(missing_ok=True)
+    await hub.notify("restored")
+    return {"ok": True, "message": "NAS 备份已恢复，请重新登录"}
 
 
 @app.put("/api/admin/invoice-defaults")

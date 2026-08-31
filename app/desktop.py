@@ -14,6 +14,7 @@ import webbrowser
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from urllib.error import URLError
+from urllib.parse import urlparse
 from urllib.request import urlopen
 
 import uvicorn
@@ -181,6 +182,19 @@ class DesktopApi:
         if isinstance(chosen, (tuple, list)):
             chosen = chosen[0]
         return str(chosen)
+
+    def open_external_url(self, url: str) -> bool:
+        parsed = urlparse(str(url or "").strip())
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            return False
+        try:
+            if os.name == "nt":
+                os.startfile(parsed.geturl())  # type: ignore[attr-defined]
+            else:
+                webbrowser.open(parsed.geturl())
+            return True
+        except OSError:
+            return False
 
 
 def port_ready(host: str, port: int) -> bool:

@@ -1,0 +1,11 @@
+.story-source-link {
+  color: #087f97;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+}
+
+.story-source-link:hover {
+  color: var(--story-accent);
+}
