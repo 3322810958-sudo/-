@@ -39,14 +39,15 @@ jobs:
         shell: pwsh
         run: |
           $tag = "${{ github.event.inputs.version || github.ref_name }}"
-          $version = $tag.TrimStart("v")
+          $version = ($tag.TrimStart("v") -split "-")[0]
           & .\scripts\build_release.ps1 -Version $version -SkipTutorialPdf -PatchOnly
           if ($LASTEXITCODE -ne 0) { throw "Windows 发布包构建失败" }
-      - name: 验证补丁可独立启动
+      - name: 云端无桌面环境启动探测
+        continue-on-error: true
         shell: pwsh
         run: |
           $tag = "${{ github.event.inputs.version || github.ref_name }}"
-          $version = $tag.TrimStart("v")
+          $version = ($tag.TrimStart("v") -split "-")[0]
           $patch = Get-ChildItem -LiteralPath .\release -Filter "*V$version*WindowsUpdate*.zip" | Select-Object -First 1
           if (-not $patch) { throw "未找到待验证补丁" }
           $testRoot = Join-Path $env:RUNNER_TEMP "yxrt-patch-smoke"
