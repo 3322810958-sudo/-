@@ -10,7 +10,7 @@ from pypdf import PdfWriter
 
 from app.main import app
 from app.database import transaction
-from app.desktop import desktop_server_config, startup_page
+from app.desktop import desktop_server_config, open_edge_or_default, startup_page
 from app.quality import record_issue, sync_ocr_issues
 from app.updater import UPDATE_REPOSITORY, _safe_asset_url
 from launcher import ensure_runtime_streams
@@ -138,6 +138,24 @@ def test_startup_failure_page_is_visible_and_patch_bundles_runtime():
     desktop_source = (Path(__file__).parents[1] / "app" / "desktop.py").read_text(encoding="utf-8-sig")
     assert 'YXRT_SMOKE_TEST = "1"' in smoke_script
     assert 'os.environ.get("YXRT_SMOKE_TEST") == "1"' in desktop_source
+
+
+def test_startup_page_navigates_without_cross_thread_webview_calls():
+    page = startup_page(log_path=Path("C:/Temp/startup.log"), target_url="http://127.0.0.1:8765")
+    assert "fetch(target + '/health'" in page
+    assert "window.location.replace(target)" in page
+    assert "http://127.0.0.1:8765" in page
+    desktop_source = (Path(__file__).parents[1] / "app" / "desktop.py").read_text(encoding="utf-8-sig")
+    assert "window.load_url(url)" not in desktop_source
+
+
+def test_windows_default_uses_isolated_edge_app_mode():
+    desktop_source = (Path(__file__).parents[1] / "app" / "desktop.py").read_text(encoding="utf-8-sig")
+    assert 'os.environ.get("YXRT_EMBEDDED_WEBVIEW") != "1"' in desktop_source
+    assert 'f"--app={url}"' in desktop_source
+    assert 'runtime_home / "data" / "edge-app"' in desktop_source
+    assert "edge_app_running(edge_profile)" in desktop_source
+    assert "edge_process.wait()" not in desktop_source
 
 
 def test_successful_ocr_closes_previous_failure_issues():
