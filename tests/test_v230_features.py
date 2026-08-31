@@ -134,6 +134,10 @@ def test_startup_failure_page_is_visible_and_patch_bundles_runtime():
     build_script = (Path(__file__).parents[1] / "scripts" / "build_release.ps1").read_text(encoding="utf-8-sig")
     assert '"_internal"' in build_script
     assert 'runtime_bundle = "matched-pyinstaller-runtime"' in build_script
+    smoke_script = (Path(__file__).parents[1] / "scripts" / "smoke_test_frozen.ps1").read_text(encoding="utf-8-sig")
+    desktop_source = (Path(__file__).parents[1] / "app" / "desktop.py").read_text(encoding="utf-8-sig")
+    assert 'YXRT_SMOKE_TEST = "1"' in smoke_script
+    assert 'os.environ.get("YXRT_SMOKE_TEST") == "1"' in desktop_source
 
 
 def test_successful_ocr_closes_previous_failure_issues():

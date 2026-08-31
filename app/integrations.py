@@ -123,7 +123,7 @@ def test_ai_connection(connector: dict[str, Any], secret: str = "") -> dict[str,
         raise IntegrationError("请先填写 AI 服务地址")
     kind = connector.get("kind")
     endpoint = f"{base_url}/api/tags" if kind == "ollama" else f"{base_url}/v1/models"
-    headers = {"Accept": "application/json", "User-Agent": "YXRT-Money-App/2.3.6"}
+    headers = {"Accept": "application/json", "User-Agent": "YXRT-Money-App/2.3.7"}
     if secret:
         headers["Authorization"] = f"Bearer {secret}"
     try:
@@ -153,7 +153,7 @@ def test_nas_connection(config: dict[str, Any], password: str = "") -> dict[str,
             raise IntegrationError("无法访问该目录，请检查路径、网络和 Windows 权限")
         return {"ok": True, "message": "目录连接成功；当前版本仅完成接口预留，不会自动同步"}
     token = base64.b64encode(f"{config.get('username', '')}:{password}".encode("utf-8")).decode("ascii")
-    headers = {"User-Agent": "YXRT-Money-App/2.3.6"}
+    headers = {"User-Agent": "YXRT-Money-App/2.3.7"}
     if config.get("username") or password:
         headers["Authorization"] = f"Basic {token}"
     try:

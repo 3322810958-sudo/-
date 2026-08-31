@@ -183,6 +183,25 @@ def main() -> None:
         server_thread = threading.Thread(target=run_server, name="yxrt-web", daemon=True)
         server_thread.start()
 
+    # GitHub Actions has no interactive desktop. Keep the frozen process alive
+    # so the release workflow can verify the bundled service without WebView2.
+    if os.environ.get("YXRT_SMOKE_TEST") == "1":
+        logger.info("headless frozen smoke mode enabled")
+        try:
+            while True:
+                if app_ready(host, port):
+                    logger.info("headless frozen smoke service ready url=%s", url)
+                    time.sleep(1)
+                    continue
+                if startup_failure:
+                    raise RuntimeError(startup_failure[-1])
+                if server_thread is not None and not server_thread.is_alive():
+                    raise RuntimeError("本地服务在健康检查前意外停止")
+                time.sleep(0.1)
+        finally:
+            if server is not None:
+                server.should_exit = True
+
     try:
         import webview
         webview_storage = runtime_home / "data" / "webview"
