@@ -13,6 +13,7 @@ import tempfile
 import threading
 import zipfile
 from datetime import UTC, datetime, timedelta
+from html import escape as html_escape
 from urllib.parse import quote
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -113,6 +114,8 @@ from .quality import list_issues, record_issue, resolve_issue, sync_ocr_issues
 from .security import hash_password, token_hash, validate_new_password, validate_username, verify_password
 from .sync_engine import SyncError, apply_events, events_after, perform_sync, sync_config, valid_sync_key
 from .story_engine import extract_embedded_images, extract_story_text, story_asset_role
+from .story_history import HISTORICAL_STORY_COVERS
+from .team_modules import router as team_modules_router
 from .updater import check_for_update, get_update_job, list_patch_releases, schedule_update_install, start_update_download
 from .wallpaper_engine import scan_wallpapers, wallpaper_item
 
@@ -137,7 +140,7 @@ def _default_login_info_items(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     credits += "\n鸣谢：PaddleOCR、pypdf、pywebview、Tabler 等开源项目"
     return [
         {"id": "credits", "type": "credits", "title": "创作者与鸣谢", "content": credits, "visible": True},
-        {"id": "updates", "type": "updates", "title": "V2.3.9 本次更新", "content": "车队故事加入公开历史时间线和来源链接；NAS 支持管理员手动上传、校验、查看和恢复完整备份。", "visible": True},
+        {"id": "updates", "type": "updates", "title": "V2.4.0 本次更新", "content": "新增全队计划甘特图、Deadline 提醒、跨赛季元件库、BOM 缺料分析与故事赛季封面。", "visible": True},
         {"id": "season_total", "type": "total", "title": "当前赛季记款总金额", "content": "", "visible": True},
         {"id": "motto", "type": "motto", "title": "队训", "content": "脚踏实地、精益求精", "visible": True},
         {"id": "philosophy", "type": "philosophy", "title": "造车理念", "content": "品质、精致、极致", "visible": True},
@@ -269,6 +272,7 @@ app = FastAPI(
     lifespan=lifespan,
 )
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+app.include_router(team_modules_router)
 
 
 @app.middleware("http")
@@ -303,6 +307,16 @@ async def stories_page() -> FileResponse:
     return FileResponse(STATIC_DIR / "stories.html", media_type="text/html; charset=utf-8")
 
 
+@app.get("/plans", response_class=HTMLResponse)
+async def plans_page() -> FileResponse:
+    return FileResponse(STATIC_DIR / "plans.html", media_type="text/html; charset=utf-8")
+
+
+@app.get("/components", response_class=HTMLResponse)
+async def components_page() -> FileResponse:
+    return FileResponse(STATIC_DIR / "components.html", media_type="text/html; charset=utf-8")
+
+
 def _story_payload(conn: sqlite3.Connection, row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
     item = dict(row)
     assets = [dict(asset) for asset in conn.execute(
@@ -315,6 +329,16 @@ def _story_payload(conn: sqlite3.Connection, row: sqlite3.Row | dict[str, Any]) 
     for asset in assets:
         asset["url"] = f"/api/stories/assets/{asset['id']}"
         asset["download_url"] = f"/api/stories/assets/{asset['id']}?download=1"
+    if not any(asset["asset_role"] == "cover" for asset in assets):
+        official_cover = HISTORICAL_STORY_COVERS.get(str(item["id"]))
+        assets.append({
+            "id": f"fallback_{item['id']}", "asset_role": "cover",
+            "caption": "官方赛事手册车队页" if official_cover else "赛季年份封面",
+            "sort_order": -1, "attachment_id": "",
+            "original_name": "官方赛事手册车队页.png" if official_cover else "自动生成赛季封面.svg",
+            "mime_type": "image/png" if official_cover else "image/svg+xml", "size_bytes": 0,
+            "url": official_cover or f"/api/stories/fallback-cover/{item['id']}.svg", "download_url": "",
+        })
     item["assets"] = assets
     item["published"] = bool(item.get("published"))
     item["period_label"] = (
@@ -331,6 +355,35 @@ def _optional_story_admin(request: Request) -> AuthContext | None:
     except HTTPException:
         return None
     return auth if auth.user.get("role") == "admin" else None
+
+
+@app.get("/api/stories/fallback-cover/{story_id}.svg")
+async def story_fallback_cover(story_id: str, request: Request) -> Response:
+    with connect() as conn:
+        row = conn.execute(
+            """SELECT s.title,s.published_date,s.accent_color,s.published,se.name AS season_name
+            FROM stories s JOIN seasons se ON se.id=s.season_id
+            WHERE s.id=? AND s.deleted_at IS NULL""", (story_id,),
+        ).fetchone()
+    if not row or (not row["published"] and not _optional_story_admin(request)):
+        raise HTTPException(status_code=404, detail="故事封面不存在")
+    year = str(row["published_date"] or "")[:4] or str(row["season_name"] or "")[:4] or "YXRT"
+    title = html_escape(str(row["title"] or "燕翔车队")[:28])
+    accent = str(row["accent_color"] or "#27d3ff")
+    if not re.fullmatch(r"#[0-9A-Fa-f]{6}", accent):
+        accent = "#27d3ff"
+    svg = f"""<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="900" viewBox="0 0 1600 900">
+    <defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#07131f"/><stop offset="1" stop-color="#102a3c"/></linearGradient>
+    <pattern id="grid" width="54" height="54" patternUnits="userSpaceOnUse"><path d="M54 0H0V54" fill="none" stroke="#ffffff" stroke-opacity=".05"/></pattern></defs>
+    <rect width="1600" height="900" fill="url(#g)"/><rect width="1600" height="900" fill="url(#grid)"/>
+    <path d="M-80 760 L900 120 L1680 120" fill="none" stroke="{accent}" stroke-width="12" opacity=".72"/>
+    <path d="M-120 830 L930 150 L1720 150" fill="none" stroke="#ff4d5d" stroke-width="4" opacity=".65"/>
+    <text x="120" y="170" fill="{accent}" font-family="Bahnschrift,Microsoft YaHei UI,sans-serif" font-size="34" letter-spacing="13">YANXIANG RACING</text>
+    <text x="110" y="560" fill="#ffffff" font-family="Bahnschrift,Microsoft YaHei UI,sans-serif" font-size="250" font-weight="900">{html_escape(year)}</text>
+    <text x="126" y="660" fill="#dbe9f4" font-family="Microsoft YaHei UI,sans-serif" font-size="48" font-weight="700">{title}</text>
+    <text x="128" y="735" fill="#8ca3b8" font-family="Microsoft YaHei UI,sans-serif" font-size="28">{html_escape(str(row['season_name']))} · 赛季档案</text>
+    </svg>"""
+    return Response(content=svg, media_type="image/svg+xml", headers={"Cache-Control": "public, max-age=86400"})
 
 
 @app.get("/api/stories")

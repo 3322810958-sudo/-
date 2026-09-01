@@ -43,6 +43,14 @@ HISTORICAL_STORIES: tuple[dict[str, object], ...] = (
         "layout_style": "editorial",
     },
     {
+        "id": "story_history_2013_xia_huaicheng_profile",
+        "title": "人物志：夏怀成与旧仓库里的造车课堂",
+        "published_date": "2013-11-07",
+        "summary": "科学网人物报道记录了燕翔车队创始人夏怀成与学生在旧仓库中开展赛车工程实践的经历。",
+        "body": "公开人物报道将夏怀成称为燕翔车队创始人，并记录了他带领学生在有限条件下完成赛车设计、制造和调试的过程。本条仅作内容摘要与史料索引，完整内容请通过来源链接阅读。\n\n资料来源：科学网《旧仓库里的造车梦》\nhttps://news.sciencenet.cn/sbhtmlnews/2013/11/279766.shtm",
+        "layout_style": "editorial",
+    },
+    {
         "id": "story_history_2014_yanxiang_5",
         "title": "燕翔五号与创办高校奖",
         "published_date": "2014-10-18",
@@ -138,4 +146,19 @@ HISTORICAL_STORIES: tuple[dict[str, object], ...] = (
         "body": "这一阶段体现了车队在复合材料车身、智能驾驶与跨团队交流上的进一步探索。社交平台链接可能受平台登录和地区访问策略影响。\n\n资料来源：燕山大学车辆与能源学院\nhttps://vec.ysu.edu.cn/info/1002/8240.htm\n\n资料来源：微博公开内容（一）\nhttps://weibo.com/2/detail/5331471474365408\n\n资料来源：微博公开内容（二）\nhttps://weibo.com/2/detail/5336535794714847",
         "layout_style": "editorial",
     },
+    {
+        "id": "story_history_2026_fscc_a06",
+        "title": "2026 赛季：A06 参赛编号",
+        "published_date": "2026-08-27",
+        "summary": "中国大学生方程式汽车大赛官网参赛车队列表记录燕山大学燕翔车队 2026 赛季编号为 A06。",
+        "body": "该条目用于保存赛事官网公开的参赛编号索引，便于后续赛季资料继续补充。页面内容可能随赛事组织方更新。\n\n资料来源：中国大学生方程式汽车大赛官网 2026 参赛车队列表\nhttps://formulastudent.sae-china.org/list.php?type=3",
+        "layout_style": "technical",
+    },
 )
+
+
+# 官方赛事手册中可直接核验的车队页，优先作为对应故事封面。
+HISTORICAL_STORY_COVERS: dict[str, str] = {
+    "story_history_2023_e09": "/static/assets/story-2023-e09-48.png",
+    "story_history_2024_e36_a05": "/static/assets/story-2024-e36-089.png",
+}

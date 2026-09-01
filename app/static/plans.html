@@ -1,0 +1,239 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>车队计划中心 · 燕翔车队</title>
+    <link rel="stylesheet" href="/static/modules.css?v=2.4.0" />
+  </head>
+  <body>
+    <div class="module-shell">
+      <aside class="module-sidebar">
+        <div class="module-brand">
+          <img src="/static/assets/team-logo.png" alt="燕翔车队" />
+          <div><b>燕翔车队</b><small>全队协同中心</small></div>
+        </div>
+        <nav class="module-nav">
+          <a href="/">经费管理</a><a class="active" href="/plans">车队计划</a
+          ><a href="/components">元件库</a><a href="/stories">故事模式</a>
+        </nav>
+        <footer>
+          YXRT TEAM OPERATIONS · <span id="versionText">V2.4.0</span>
+        </footer>
+      </aside>
+      <main class="module-main">
+        <header class="module-topbar">
+          <div>
+            <p>TEAM SCHEDULE / GANTT</p>
+            <h1>车队计划中心</h1>
+          </div>
+          <div class="actions">
+            <select id="seasonSelect" class="btn"></select
+            ><button id="enableNotificationBtn" class="btn">
+              启用 Windows 提醒</button
+            ><button id="importBtn" class="btn">导入甘特图</button
+            ><button id="addTaskBtn" class="btn primary">＋ 新建任务</button>
+          </div>
+        </header>
+        <div class="module-content">
+          <section class="metrics">
+            <article class="metric">
+              <span>全部任务</span><b id="metricAll">0</b>
+            </article>
+            <article class="metric">
+              <span>进行中</span><b id="metricDoing">0</b>
+            </article>
+            <article class="metric">
+              <span>临近截止</span><b id="metricDue">0</b>
+            </article>
+            <article class="metric">
+              <span>已逾期</span><b id="metricOverdue">0</b>
+            </article>
+          </section>
+          <section class="panel">
+            <div class="filters">
+              <input id="taskSearch" placeholder="搜索任务名称或描述" /><select
+                id="statusFilter"
+              >
+                <option value="">全部状态</option>
+                <option value="todo">未开始</option>
+                <option value="doing">进行中</option>
+                <option value="review">待验收</option>
+                <option value="blocked">阻塞</option>
+                <option value="done">已完成</option></select
+              ><select id="viewMode">
+                <option value="gantt">甘特图</option>
+                <option value="table">任务清单</option></select
+              ><button id="refreshBtn" class="btn">刷新</button>
+            </div>
+          </section>
+          <section id="ganttPanel" class="panel">
+            <div class="panel-head">
+              <div>
+                <h2>赛季甘特图</h2>
+                <small>点击任务条可查看或编辑；前置任务用于描述工程依赖</small>
+              </div>
+            </div>
+            <div id="gantt" class="gantt-wrap"></div>
+          </section>
+          <section id="tablePanel" class="panel hidden">
+            <div class="panel-head">
+              <h2>任务清单</h2>
+              <small id="taskCount">0 项</small>
+            </div>
+            <div class="table-scroll">
+              <table class="data-table">
+                <thead>
+                  <tr>
+                    <th>任务</th>
+                    <th>负责人</th>
+                    <th>部门</th>
+                    <th>状态</th>
+                    <th>进度</th>
+                    <th>截止日期</th>
+                    <th>操作</th>
+                  </tr>
+                </thead>
+                <tbody id="taskRows"></tbody>
+              </table>
+            </div>
+          </section>
+        </div>
+      </main>
+    </div>
+    <dialog id="taskDialog">
+      <form id="taskForm" class="dialog-card">
+        <header>
+          <h2 id="taskDialogTitle">新建任务</h2>
+          <button class="close" type="button" data-close="taskDialog">×</button>
+        </header>
+        <div class="dialog-body form-grid">
+          <input id="taskId" type="hidden" /><label class="field wide"
+            >任务名称<input id="taskTitle" required maxlength="180" /></label
+          ><label class="field wide"
+            >任务描述<textarea id="taskDescription"></textarea></label
+          ><label class="field"
+            >状态<select id="taskStatus">
+              <option value="todo">未开始</option>
+              <option value="doing">进行中</option>
+              <option value="review">待验收</option>
+              <option value="blocked">阻塞</option>
+              <option value="done">已完成</option>
+            </select></label
+          ><label class="field"
+            >优先级<select id="taskPriority">
+              <option value="low">低</option>
+              <option value="medium">中</option>
+              <option value="high">高</option>
+              <option value="urgent">紧急</option>
+            </select></label
+          ><label class="field"
+            >开始日期<input id="taskStart" type="date" /></label
+          ><label class="field"
+            >截止日期<input id="taskDue" type="date" /></label
+          ><label class="field"
+            >进度（0-100）<input
+              id="taskProgress"
+              type="number"
+              min="0"
+              max="100"
+              value="0" /></label
+          ><label class="field"
+            >父任务<select id="taskParent">
+              <option value="">无</option>
+            </select></label
+          ><label class="field"
+            >所属部门（可多选）<select
+              id="taskDepartments"
+              multiple
+            ></select></label
+          ><label class="field"
+            >负责人（可多选）<select
+              id="taskAssignees"
+              multiple
+            ></select></label
+          ><label class="field wide"
+            >前置任务（可多选）<select id="taskDependencies" multiple></select
+          ></label>
+          <div class="field wide">
+            <span>提醒节点</span>
+            <div class="switches">
+              <label
+                ><input type="checkbox" name="reminder" value="7" checked />提前
+                7 天</label
+              ><label
+                ><input type="checkbox" name="reminder" value="3" checked />提前
+                3 天</label
+              ><label
+                ><input type="checkbox" name="reminder" value="1" checked />提前
+                1 天</label
+              ><label
+                ><input
+                  type="checkbox"
+                  name="reminder"
+                  value="0"
+                  checked
+                />截止当天</label
+              >
+            </div>
+          </div>
+        </div>
+        <footer>
+          <button id="deleteTaskBtn" type="button" class="btn danger hidden">
+            删除任务</button
+          ><span></span
+          ><button type="button" class="btn" data-close="taskDialog">
+            取消</button
+          ><button class="btn primary">保存任务</button>
+        </footer>
+      </form>
+    </dialog>
+    <dialog id="importDialog">
+      <div class="dialog-card">
+        <header>
+          <h2>导入甘特图</h2>
+          <button class="close" type="button" data-close="importDialog">
+            ×
+          </button>
+        </header>
+        <div class="dialog-body">
+          <p>支持 XLSX、CSV、TSV。系统先预检，不会直接写入。</p>
+          <div class="actions">
+            <a class="btn" href="/api/plans/import-template">下载模板</a
+            ><input id="ganttFile" type="file" accept=".xlsx,.csv,.tsv" />
+          </div>
+          <div id="importPreview" class="preview-list empty">请选择文件</div>
+        </div>
+        <footer>
+          <button type="button" class="btn" data-close="importDialog">
+            取消</button
+          ><button id="previewImportBtn" class="btn">预检</button
+          ><button id="applyImportBtn" class="btn primary" disabled>
+            确认导入
+          </button>
+        </footer>
+      </div>
+    </dialog>
+    <dialog id="confirmDialog">
+      <div class="dialog-card">
+        <header><h2>确认删除任务</h2></header>
+        <div class="dialog-body">
+          <p>删除前会保留在版本数据中，只有管理员可以执行。</p>
+        </div>
+        <footer>
+          <button type="button" class="btn" data-close="confirmDialog">
+            取消</button
+          ><button id="confirmDeleteBtn" class="btn danger">删除</button>
+        </footer>
+      </div>
+    </dialog>
+    <aside id="reminderDrawer" class="reminder-drawer hidden">
+      <header>
+        <b>Deadline 提醒</b><button class="close" id="closeReminders">×</button>
+      </header>
+      <div id="reminderList" class="reminder-list"></div>
+    </aside>
+    <div id="toast" class="toast"></div>
+    <script src="/static/plans.js?v=2.4.0"></script>
+  </body>
+</html>

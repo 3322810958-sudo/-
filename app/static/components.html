@@ -1,0 +1,364 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>元件汇总库 · 燕翔车队</title>
+    <link rel="stylesheet" href="/static/modules.css?v=2.4.0" />
+  </head>
+  <body>
+    <div class="module-shell">
+      <aside class="module-sidebar">
+        <div class="module-brand">
+          <img src="/static/assets/team-logo.png" alt="燕翔车队" />
+          <div><b>燕翔车队</b><small>电气部元件汇总库</small></div>
+        </div>
+        <nav class="module-nav">
+          <a href="/">经费管理</a><a href="/plans">车队计划</a
+          ><a class="active" href="/components">元件库</a
+          ><a href="/stories">故事模式</a>
+        </nav>
+        <footer>
+          YXRT COMPONENT VAULT · <span id="versionText">V2.4.0</span>
+        </footer>
+      </aside>
+      <main class="module-main">
+        <header class="module-topbar">
+          <div>
+            <p>COMPONENT / BOM / INVENTORY</p>
+            <h1>电气部元件汇总库</h1>
+          </div>
+          <div class="actions">
+            <button id="mouserBtn" class="btn">贸泽资料</button
+            ><button id="bomBtn" class="btn">导入 BOM</button
+            ><button id="movementBtn" class="btn">出入库 / 领用</button
+            ><button id="addComponentBtn" class="btn primary">
+              ＋ 新建元件
+            </button>
+          </div>
+        </header>
+        <div class="module-content">
+          <section class="metrics">
+            <article class="metric">
+              <span>元件档案</span><b id="metricCount">0</b>
+            </article>
+            <article class="metric">
+              <span>库存总数量</span><b id="metricQuantity">0</b>
+            </article>
+            <article class="metric">
+              <span>库存估值</span><b id="metricValue">¥0</b>
+            </article>
+            <article class="metric">
+              <span>低库存预警</span><b id="metricLow">0</b>
+            </article>
+          </section>
+          <section class="panel">
+            <div class="filters">
+              <input
+                id="componentSearch"
+                placeholder="搜索名称、制造商型号、贸泽料号"
+              /><input id="categoryFilter" placeholder="分类筛选" /><label
+                class="btn"
+                ><input id="lowStockOnly" type="checkbox" /> 仅低库存</label
+              ><button id="refreshBtn" class="btn">刷新</button>
+            </div>
+          </section>
+          <section class="panel">
+            <div class="panel-head">
+              <div>
+                <h2>元件档案与实时库存</h2>
+                <small>库存跨赛季保留，所有出入库流水标记所属赛季</small>
+              </div>
+              <button id="managerBtn" class="btn hidden">管理负责人</button>
+            </div>
+            <div class="table-scroll">
+              <table class="data-table">
+                <thead>
+                  <tr>
+                    <th>元件</th>
+                    <th>型号 / 贸泽料号</th>
+                    <th>分类 / 封装</th>
+                    <th>库位</th>
+                    <th>库存</th>
+                    <th>单价</th>
+                    <th>操作</th>
+                  </tr>
+                </thead>
+                <tbody id="componentRows"></tbody>
+              </table>
+            </div>
+          </section>
+          <section class="panel">
+            <div class="panel-head">
+              <div>
+                <h2>最近出入库与申请</h2>
+                <small
+                  >普通成员提交申请，元件库负责人审批后扣减或增加库存</small
+                >
+              </div>
+            </div>
+            <div class="table-scroll">
+              <table class="data-table">
+                <thead>
+                  <tr>
+                    <th>时间</th>
+                    <th>元件</th>
+                    <th>类型</th>
+                    <th>数量</th>
+                    <th>项目 / 批次</th>
+                    <th>经办人</th>
+                    <th>状态</th>
+                    <th>操作</th>
+                  </tr>
+                </thead>
+                <tbody id="movementRows"></tbody>
+              </table>
+            </div>
+          </section>
+        </div>
+      </main>
+    </div>
+    <dialog id="componentDialog">
+      <form id="componentForm" class="dialog-card">
+        <header>
+          <h2 id="componentDialogTitle">新建元件档案</h2>
+          <button class="close" type="button" data-close="componentDialog">
+            ×
+          </button>
+        </header>
+        <div class="dialog-body form-grid">
+          <input id="componentId" type="hidden" /><label class="field"
+            >元件名称<input id="componentName" maxlength="180" /></label
+          ><label class="field"
+            >分类<input
+              id="componentCategory"
+              maxlength="100"
+              placeholder="例如：电源管理" /></label
+          ><label class="field"
+            >制造商<input id="componentManufacturer" maxlength="180" /></label
+          ><label class="field"
+            >制造商型号<input id="componentMpn" maxlength="180" /></label
+          ><label class="field"
+            >贸泽料号<input id="componentMouser" maxlength="180" /></label
+          ><label class="field"
+            >封装<input id="componentPackage" maxlength="120" /></label
+          ><label class="field"
+            >库位<input id="componentLocation" maxlength="200" /></label
+          ><label class="field"
+            >单位<input id="componentUnit" value="个" maxlength="30" /></label
+          ><label class="field"
+            >低库存阈值<input
+              id="componentMinimum"
+              type="number"
+              min="0"
+              step="0.01"
+              value="0" /></label
+          ><label class="field"
+            >参考单价（元）<input
+              id="componentCost"
+              type="number"
+              min="0"
+              step="0.01"
+              value="0" /></label
+          ><label class="field wide"
+            >参数<input id="componentParameters" maxlength="1000" /></label
+          ><label class="field"
+            >数据手册链接<input id="componentDatasheet" type="url" /></label
+          ><label class="field"
+            >产品图片链接<input id="componentImage" type="url" /></label
+          ><label class="field wide"
+            >备注<textarea id="componentNote"></textarea>
+          </label>
+        </div>
+        <footer>
+          <button
+            id="deleteComponentBtn"
+            type="button"
+            class="btn danger hidden"
+          >
+            删除</button
+          ><span></span
+          ><button type="button" class="btn" data-close="componentDialog">
+            取消</button
+          ><button class="btn primary">保存档案</button>
+        </footer>
+      </form>
+    </dialog>
+    <dialog id="movementDialog">
+      <form id="movementForm" class="dialog-card">
+        <header>
+          <h2>出入库与领用申请</h2>
+          <button class="close" type="button" data-close="movementDialog">
+            ×
+          </button>
+        </header>
+        <div class="dialog-body form-grid">
+          <label class="field wide"
+            >元件<select id="movementComponent" required></select></label
+          ><label class="field"
+            >类型<select id="movementType">
+              <option value="out">领用出库</option>
+              <option value="in">采购入库</option>
+              <option value="adjust">库存调整（负责人）</option>
+            </select></label
+          ><label class="field"
+            >数量<input
+              id="movementQuantity"
+              type="number"
+              min="0.001"
+              step="0.001"
+              required /></label
+          ><label class="field"
+            >单价（元，入库可填）<input
+              id="movementCost"
+              type="number"
+              min="0"
+              step="0.01" /></label
+          ><label class="field">采购批次<input id="movementBatch" /></label
+          ><label class="field wide"
+            >项目名称<input
+              id="movementProject"
+              placeholder="例如：2026 BMS V3" /></label
+          ><label class="field wide"
+            >说明<textarea id="movementNote"></textarea>
+          </label>
+        </div>
+        <footer>
+          <button type="button" class="btn" data-close="movementDialog">
+            取消</button
+          ><button class="btn primary">提交</button>
+        </footer>
+      </form>
+    </dialog>
+    <dialog id="bomDialog">
+      <div class="dialog-card">
+        <header>
+          <h2>BOM 批量入库与缺料分析</h2>
+          <button class="close" type="button" data-close="bomDialog">×</button>
+        </header>
+        <div class="dialog-body form-grid">
+          <label class="field wide"
+            >BOM 文件（XLSX、CSV、TSV）<input
+              id="bomFile"
+              type="file"
+              accept=".xlsx,.csv,.tsv" /></label
+          ><label class="field"
+            >用途<select id="bomMode">
+              <option value="compare">原理图 BOM 缺料分析</option>
+              <option value="stock_in">采购 BOM 批量入库</option>
+            </select></label
+          ><label class="field"
+            >生产套数<input
+              id="productionCount"
+              type="number"
+              min="0.001"
+              step="0.001"
+              value="1"
+          /></label>
+          <div id="bomPreview" class="preview-list empty field wide">
+            请选择文件并预检
+          </div>
+        </div>
+        <footer>
+          <button type="button" class="btn" data-close="bomDialog">取消</button
+          ><button id="bomPreviewBtn" class="btn">预检</button
+          ><button id="bomApplyBtn" class="btn primary" disabled>
+            确认批量入库
+          </button>
+        </footer>
+      </div>
+    </dialog>
+    <dialog id="mouserDialog">
+      <div class="dialog-card">
+        <header>
+          <h2>贸泽元器件资料</h2>
+          <button class="close" type="button" data-close="mouserDialog">
+            ×
+          </button>
+        </header>
+        <div class="dialog-body">
+          <div class="actions">
+            <input
+              id="mouserQuery"
+              placeholder="完整制造商型号、贸泽料号或英文关键词"
+            /><button id="mouserSearchBtn" class="btn primary">查询</button
+            ><button id="mouserConfigBtn" class="btn hidden">配置 API</button>
+          </div>
+          <p id="mouserStatus">未配置时不影响本地库存、BOM 与缺料分析。</p>
+          <div id="mouserResults" class="mouser-results"></div>
+        </div>
+        <footer>
+          <button type="button" class="btn" data-close="mouserDialog">
+            完成
+          </button>
+        </footer>
+      </div>
+    </dialog>
+    <dialog id="mouserConfigDialog">
+      <form id="mouserConfigForm" class="dialog-card">
+        <header>
+          <h2>贸泽 Search API 配置</h2>
+          <button class="close" type="button" data-close="mouserConfigDialog">
+            ×
+          </button>
+        </header>
+        <div class="dialog-body form-grid">
+          <label class="field"
+            ><span>启用查询</span
+            ><select id="mouserEnabled">
+              <option value="false">停用</option>
+              <option value="true">启用</option>
+            </select></label
+          ><label class="field"
+            ><span>API Key</span
+            ><input
+              id="mouserApiKey"
+              type="password"
+              autocomplete="new-password"
+              placeholder="已配置时留空可保留"
+          /></label>
+          <p class="field wide">
+            API Key 仅使用 Windows
+            当前账户加密保存，不进入同步事件或页面返回值；完整备份中只保留不可直接读取的密文。
+          </p>
+        </div>
+        <footer>
+          <button type="button" class="btn" data-close="mouserConfigDialog">
+            取消</button
+          ><button class="btn primary">保存配置</button>
+        </footer>
+      </form>
+    </dialog>
+    <dialog id="managerDialog">
+      <div class="dialog-card">
+        <header>
+          <h2>元件库负责人</h2>
+          <button class="close" type="button" data-close="managerDialog">
+            ×
+          </button>
+        </header>
+        <div id="managerList" class="dialog-body switches"></div>
+        <footer>
+          <button type="button" class="btn" data-close="managerDialog">
+            取消</button
+          ><button id="saveManagersBtn" class="btn primary">保存负责人</button>
+        </footer>
+      </div>
+    </dialog>
+    <dialog id="confirmDialog">
+      <div class="dialog-card">
+        <header><h2>确认删除元件档案</h2></header>
+        <div class="dialog-body">
+          <p>删除后历史流水仍保留。该操作仅管理员可执行。</p>
+        </div>
+        <footer>
+          <button type="button" class="btn" data-close="confirmDialog">
+            取消</button
+          ><button id="confirmDeleteBtn" class="btn danger">删除</button>
+        </footer>
+      </div>
+    </dialog>
+    <div id="toast" class="toast"></div>
+    <script src="/static/components.js?v=2.4.0"></script>
+  </body>
+</html>

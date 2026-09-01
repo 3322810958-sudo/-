@@ -50,7 +50,7 @@ def test_admin_can_upload_complete_backup_to_saved_nas(tmp_path: Path) -> None:
         assert saved.status_code == 200, saved.text
         uploaded = client.post("/api/admin/integrations/nas/backup", json={}, headers=headers)
         assert uploaded.status_code == 200, uploaded.text
-        assert uploaded.json()["filename"].startswith("燕翔车队经费完整备份_V2.3.9_")
+        assert uploaded.json()["filename"].startswith("燕翔车队经费完整备份_V2.4.0_")
         assert (directory / uploaded.json()["filename"]).is_file()
         listed = client.get("/api/admin/integrations/nas/backups")
         assert listed.status_code == 200, listed.text

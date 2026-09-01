@@ -34,6 +34,9 @@ BUSINESS_TABLES = (
     "invoices",
     "invoice_splits",
     "settlements",
+    "team_tasks",
+    "inventory_components",
+    "inventory_movements",
 )
 SEASON_BUSINESS_TABLES = (
     "members",
@@ -41,6 +44,8 @@ SEASON_BUSINESS_TABLES = (
     "invoices",
     "invoice_splits",
     "settlements",
+    "team_tasks",
+    "inventory_movements",
 )
 SYNC_TABLES = BUSINESS_TABLES + ("users", "seasons")
 
@@ -474,6 +479,88 @@ CREATE TABLE IF NOT EXISTS story_assets (
   UNIQUE(story_id,attachment_id)
 );
 
+CREATE TABLE IF NOT EXISTS team_tasks (
+  id TEXT PRIMARY KEY,
+  season_id TEXT NOT NULL REFERENCES seasons(id),
+  title TEXT NOT NULL,
+  description TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'todo' CHECK(status IN ('todo','doing','review','done','blocked')),
+  priority TEXT NOT NULL DEFAULT 'medium' CHECK(priority IN ('low','medium','high','urgent')),
+  start_date TEXT NOT NULL DEFAULT '',
+  due_date TEXT NOT NULL DEFAULT '',
+  progress INTEGER NOT NULL DEFAULT 0 CHECK(progress BETWEEN 0 AND 100),
+  parent_id TEXT REFERENCES team_tasks(id) ON DELETE SET NULL,
+  department_json TEXT NOT NULL DEFAULT '[]',
+  assignee_user_ids_json TEXT NOT NULL DEFAULT '[]',
+  dependency_ids_json TEXT NOT NULL DEFAULT '[]',
+  reminder_days_json TEXT NOT NULL DEFAULT '[7,3,1,0]',
+  created_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  version INTEGER NOT NULL DEFAULT 1,
+  device_id TEXT NOT NULL,
+  deleted_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS task_reminder_state (
+  id TEXT PRIMARY KEY,
+  task_id TEXT NOT NULL REFERENCES team_tasks(id) ON DELETE CASCADE,
+  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  reminder_key TEXT NOT NULL,
+  read_at TEXT,
+  dismissed_at TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE(task_id,user_id,reminder_key)
+);
+
+CREATE TABLE IF NOT EXISTS inventory_components (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  category TEXT NOT NULL DEFAULT '',
+  manufacturer TEXT NOT NULL DEFAULT '',
+  manufacturer_part_no TEXT NOT NULL DEFAULT '',
+  mouser_part_no TEXT NOT NULL DEFAULT '',
+  package TEXT NOT NULL DEFAULT '',
+  parameters TEXT NOT NULL DEFAULT '',
+  location TEXT NOT NULL DEFAULT '',
+  unit TEXT NOT NULL DEFAULT '个',
+  quantity REAL NOT NULL DEFAULT 0,
+  minimum_quantity REAL NOT NULL DEFAULT 0,
+  unit_cost_cents INTEGER NOT NULL DEFAULT 0,
+  image_url TEXT NOT NULL DEFAULT '',
+  datasheet_url TEXT NOT NULL DEFAULT '',
+  note TEXT NOT NULL DEFAULT '',
+  mouser_cache_json TEXT NOT NULL DEFAULT '{}',
+  mouser_cached_at TEXT NOT NULL DEFAULT '',
+  created_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  version INTEGER NOT NULL DEFAULT 1,
+  device_id TEXT NOT NULL,
+  deleted_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS inventory_movements (
+  id TEXT PRIMARY KEY,
+  component_id TEXT NOT NULL REFERENCES inventory_components(id),
+  season_id TEXT NOT NULL REFERENCES seasons(id),
+  requested_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+  approved_by TEXT REFERENCES users(id) ON DELETE SET NULL,
+  movement_type TEXT NOT NULL CHECK(movement_type IN ('in','out','adjust')),
+  status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','applied','rejected')),
+  quantity REAL NOT NULL,
+  unit_cost_cents INTEGER NOT NULL DEFAULT 0,
+  batch_no TEXT NOT NULL DEFAULT '',
+  project_name TEXT NOT NULL DEFAULT '',
+  note TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  version INTEGER NOT NULL DEFAULT 1,
+  device_id TEXT NOT NULL,
+  deleted_at TEXT
+);
+
 DROP INDEX IF EXISTS idx_attachments_sha_active;
 CREATE INDEX IF NOT EXISTS idx_attachments_sha_active ON attachments(sha256) WHERE deleted_at IS NULL;
 CREATE INDEX IF NOT EXISTS idx_invoices_date ON invoices(invoice_date DESC) WHERE deleted_at IS NULL;
@@ -493,6 +580,14 @@ CREATE INDEX IF NOT EXISTS idx_feedback_status ON feedback_reports(status,create
 CREATE INDEX IF NOT EXISTS idx_stories_public ON stories(published,published_date DESC,sort_order) WHERE deleted_at IS NULL;
 CREATE INDEX IF NOT EXISTS idx_stories_season ON stories(season_id,published_date DESC) WHERE deleted_at IS NULL;
 CREATE INDEX IF NOT EXISTS idx_story_assets_story ON story_assets(story_id,sort_order);
+CREATE INDEX IF NOT EXISTS idx_team_tasks_season_due ON team_tasks(season_id,due_date,status) WHERE deleted_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_team_tasks_updated ON team_tasks(updated_at DESC) WHERE deleted_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_task_reminder_user ON task_reminder_state(user_id,read_at,created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_inventory_part_no ON inventory_components(manufacturer_part_no) WHERE deleted_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_inventory_mouser_no ON inventory_components(mouser_part_no) WHERE deleted_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_inventory_category ON inventory_components(category,name) WHERE deleted_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_inventory_movements_component ON inventory_movements(component_id,created_at DESC) WHERE deleted_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_inventory_movements_season ON inventory_movements(season_id,created_at DESC) WHERE deleted_at IS NULL;
 """
 
 
@@ -700,6 +795,15 @@ def _migrate_v239_schema(conn: sqlite3.Connection) -> None:
     conn.execute("INSERT OR REPLACE INTO meta(key,value) VALUES('schema_version','9')")
 
 
+def _migrate_v240_schema(conn: sqlite3.Connection) -> None:
+    seed_historical_stories(conn)
+    if not conn.execute("SELECT 1 FROM app_settings WHERE key='inventory_manager_ids'").fetchone():
+        set_setting(conn, "inventory_manager_ids", "[]", sync=False)
+    if not conn.execute("SELECT 1 FROM app_settings WHERE key='mouser_config'").fetchone():
+        set_setting(conn, "mouser_config", '{"enabled":false,"api_key_encrypted":""}', sync=False)
+    conn.execute("INSERT OR REPLACE INTO meta(key,value) VALUES('schema_version','10')")
+
+
 def audit(
     conn: sqlite3.Connection,
     user_id: str | None,
@@ -754,12 +858,15 @@ def row_dict(conn: sqlite3.Connection, table: str, entity_id: str, id_column: st
 def snapshot_state(conn: sqlite3.Connection) -> dict[str, Any]:
     season_id = current_season_id(conn)
     state: dict[str, Any] = {
-        "schema_version": 9,
+        "schema_version": 10,
         "season_id": season_id,
         "captured_at": utc_now(),
         "tables": {},
     }
-    for table in ("members", "attachments", "invoices", "invoice_splits", "settlements", "invoice_quality_issues", "stories"):
+    for table in (
+        "members", "attachments", "invoices", "invoice_splits", "settlements",
+        "invoice_quality_issues", "stories", "team_tasks", "inventory_movements",
+    ):
         state["tables"][table] = [
             dict(row) for row in conn.execute(
                 f"SELECT * FROM {table} WHERE season_id=?", (season_id,)
@@ -789,7 +896,11 @@ def snapshot_state(conn: sqlite3.Connection) -> dict[str, Any]:
         """SELECT sa.* FROM story_assets sa JOIN stories s ON s.id=sa.story_id
         WHERE s.season_id=?""", (season_id,),
     ).fetchall()]
-    for table in ("departments", "categories", "funding_sources", "app_settings"):
+    state["tables"]["task_reminder_state"] = [dict(row) for row in conn.execute(
+        """SELECT r.* FROM task_reminder_state r JOIN team_tasks t ON t.id=r.task_id
+        WHERE t.season_id=?""", (season_id,),
+    ).fetchall()]
+    for table in ("departments", "categories", "funding_sources", "app_settings", "inventory_components"):
         state["tables"][table] = [dict(row) for row in conn.execute(f"SELECT * FROM {table}").fetchall()]
     return state
 
@@ -876,6 +987,9 @@ def restore_snapshot(conn: sqlite3.Connection, snapshot_id: str, user_id: str) -
     current_story_ids = [str(item[0]) for item in conn.execute(
         "SELECT id FROM stories WHERE season_id=?", (restore_season_id,),
     ).fetchall()]
+    current_task_ids = [str(item[0]) for item in conn.execute(
+        "SELECT id FROM team_tasks WHERE season_id=?", (restore_season_id,),
+    ).fetchall()]
     current_invoice_ids = [str(item[0]) for item in conn.execute(
         "SELECT id FROM invoices WHERE season_id=?", (restore_season_id,),
     ).fetchall()]
@@ -891,6 +1005,11 @@ def restore_snapshot(conn: sqlite3.Connection, snapshot_id: str, user_id: str) -
     if "stories" in tables:
         delete_ids("story_assets", "story_id", current_story_ids)
         conn.execute("DELETE FROM stories WHERE season_id=?", (restore_season_id,))
+    if "team_tasks" in tables:
+        delete_ids("task_reminder_state", "task_id", current_task_ids)
+        conn.execute("DELETE FROM team_tasks WHERE season_id=?", (restore_season_id,))
+    if "inventory_movements" in tables:
+        conn.execute("DELETE FROM inventory_movements WHERE season_id=?", (restore_season_id,))
     delete_ids("invoice_supporting_attachments", "invoice_id", current_invoice_ids)
     conn.execute("DELETE FROM invoice_quality_issues WHERE season_id=?", (restore_season_id,))
     delete_ids("ocr_jobs", "attachment_id", current_attachment_ids)
@@ -929,9 +1048,21 @@ def restore_snapshot(conn: sqlite3.Connection, snapshot_id: str, user_id: str) -
             "UPDATE attachments SET uploaded_by=? WHERE id=?",
             (uploaded_by if uploaded_by in restored_users or conn.execute("SELECT 1 FROM users WHERE id=?", (uploaded_by,)).fetchone() else None, attachment_id),
         )
+    if "inventory_components" in tables:
+        _restore_global_rows(conn, "inventory_components", tables.get("inventory_components", []))
+    if "team_tasks" in tables:
+        task_rows = [{**item, "season_id": restore_season_id} for item in tables.get("team_tasks", [])]
+        task_parents = {str(item["id"]): item.get("parent_id") for item in task_rows}
+        for item in task_rows:
+            item["parent_id"] = None
+        _insert_snapshot_rows(conn, "team_tasks", task_rows)
+        for task_id, parent_id in task_parents.items():
+            if parent_id:
+                conn.execute("UPDATE team_tasks SET parent_id=? WHERE id=?", (parent_id, task_id))
     for table in (
         "invoices", "invoice_splits", "settlements", "invoice_supporting_attachments",
         "invoice_quality_issues", "ocr_jobs", "user_preferences", "user_media", "stories", "story_assets",
+        "task_reminder_state", "inventory_movements",
     ):
         rows = [{**item, **({"season_id": restore_season_id} if "season_id" in item else {})} for item in tables.get(table, [])]
         _insert_snapshot_rows(conn, table, rows)
@@ -1101,8 +1232,11 @@ def init_db() -> None:
                 ).fetchone()
             except sqlite3.Error:
                 schema_row = None; stories_ready = None
-            if schema_row and str(schema_row[0]) == "9" and stories_ready:
-                logger.info("database ready schema_version=9 path=%s", DB_PATH)
+            modules_ready = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='team_tasks'"
+            ).fetchone() if stories_ready else None
+            if schema_row and str(schema_row[0]) == "10" and stories_ready and modules_ready:
+                logger.info("database ready schema_version=10 path=%s", DB_PATH)
                 return
             logger.info("database migration started from=%s path=%s", schema_row[0] if schema_row else "unknown", DB_PATH)
             conn.executescript(SCHEMA)
@@ -1114,8 +1248,9 @@ def init_db() -> None:
             seed_defaults(conn)
             _migrate_v23_schema(conn)
             _migrate_v239_schema(conn)
+            _migrate_v240_schema(conn)
             conn.commit()
-            logger.info("database migration completed schema_version=9")
+            logger.info("database migration completed schema_version=10")
         except Exception:
             conn.rollback()
             logger.exception("database initialization failed")
