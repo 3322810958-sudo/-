@@ -1,3 +1,3 @@
 """Yanxiang Racing Team expense management application."""
 
-__version__ = "2.4.0"
+__version__ = "2.4.1"

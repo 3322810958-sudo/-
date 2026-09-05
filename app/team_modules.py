@@ -6,8 +6,10 @@ import json
 import re
 import sqlite3
 import zipfile
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
+from html import escape as xml_escape
 from typing import Any
+from urllib.parse import urlsplit
 from xml.etree import ElementTree
 
 import httpx
@@ -59,10 +61,29 @@ def _clean_date(value: Any) -> str:
     text = str(value or "").strip()
     if not text:
         return ""
+    if re.fullmatch(r"\d+(?:\.\d+)?", text):
+        try:
+            serial = float(text)
+            if 1 <= serial <= 2_958_465:
+                return (date(1899, 12, 30) + timedelta(days=int(serial))).isoformat()
+        except (OverflowError, ValueError):
+            pass
+    normalized = text[:32].replace("年", "-").replace("月", "-").replace("日", "")
+    normalized = normalized.replace("/", "-").replace(".", "-")
     try:
-        return date.fromisoformat(text[:10]).isoformat()
+        return date.fromisoformat(normalized[:10]).isoformat()
     except ValueError as exc:
         raise ValueError(f"日期格式不正确：{text}") from exc
+
+
+def _clean_url(value: Any, label: str) -> str:
+    text = str(value or "").strip()[:1000]
+    if not text:
+        return ""
+    parsed = urlsplit(text)
+    if parsed.scheme.lower() not in {"http", "https"} or not parsed.netloc:
+        raise ValueError(f"{label}仅支持 http 或 https 链接")
+    return text
 
 
 def _season_is_open(conn: sqlite3.Connection, season_id: str) -> bool:
@@ -106,6 +127,7 @@ def _task_clean(payload: dict[str, Any]) -> dict[str, Any]:
             reminders.append(number)
     reminders.sort(reverse=True)
     return {
+        "external_id": str(payload.get("external_id") or "").strip()[:100],
         "title": title,
         "description": str(payload.get("description") or "").strip()[:20_000],
         "status": status_value,
@@ -126,6 +148,20 @@ def _can_manage_task(auth: AuthContext, item: dict[str, Any]) -> bool:
         return True
     assignees = _json_list(item.get("assignee_user_ids_json"))
     return auth.user["id"] == item.get("created_by") or auth.user["id"] in assignees
+
+
+def _validate_task_external_id(
+    conn: sqlite3.Connection, external_id: str, season_id: str, task_id: str = ""
+) -> None:
+    if not external_id:
+        return
+    row = conn.execute(
+        """SELECT id FROM team_tasks WHERE season_id=? AND external_id=? COLLATE NOCASE
+        AND deleted_at IS NULL AND id<>? LIMIT 1""",
+        (season_id, external_id, task_id),
+    ).fetchone()
+    if row:
+        raise ValueError(f"当前赛季已存在任务编号：{external_id}")
 
 
 def _validate_task_links(conn: sqlite3.Connection, task_id: str, clean: dict[str, Any], season_id: str) -> None:
@@ -157,6 +193,20 @@ def _validate_task_links(conn: sqlite3.Connection, task_id: str, clean: dict[str
 
     if any(reaches(dependency, task_id, set()) for dependency in links):
         raise ValueError("任务依赖形成了循环，请调整前置任务")
+    parent_map = {
+        str(row["id"]): str(row["parent_id"] or "")
+        for row in conn.execute(
+            "SELECT id,parent_id FROM team_tasks WHERE season_id=? AND deleted_at IS NULL", (season_id,)
+        ).fetchall()
+    }
+    parent_map[task_id] = str(parent_id or "")
+    current_parent = str(parent_id or "")
+    visited = {task_id}
+    while current_parent:
+        if current_parent in visited:
+            raise ValueError("父任务形成了循环，请调整层级")
+        visited.add(current_parent)
+        current_parent = parent_map.get(current_parent, "")
     clean["dependency_ids_json"] = json.dumps(links, ensure_ascii=False)
 
 
@@ -183,7 +233,15 @@ def plans_meta(request: Request) -> dict[str, Any]:
 
 
 @router.get("/plans/tasks")
-def tasks_list(request: Request, season_id: str = "", status: str = "", search: str = "") -> dict[str, Any]:
+def tasks_list(
+    request: Request,
+    season_id: str = "",
+    status: str = "",
+    priority: str = "",
+    department: str = "",
+    assignee_id: str = "",
+    search: str = "",
+) -> dict[str, Any]:
     get_auth(request)
     with transaction(immediate=False) as conn:
         season_id = season_id or current_season_id(conn)
@@ -191,9 +249,17 @@ def tasks_list(request: Request, season_id: str = "", status: str = "", search: 
         where = ["t.season_id=?", "t.deleted_at IS NULL"]
         if status in TASK_STATUSES:
             where.append("t.status=?"); params.append(status)
+        if priority in TASK_PRIORITIES:
+            where.append("t.priority=?"); params.append(priority)
+        if department.strip():
+            where.append("EXISTS (SELECT 1 FROM json_each(t.department_json) WHERE value=?)")
+            params.append(department.strip()[:100])
+        if assignee_id.strip():
+            where.append("EXISTS (SELECT 1 FROM json_each(t.assignee_user_ids_json) WHERE value=?)")
+            params.append(assignee_id.strip()[:120])
         if search.strip():
-            where.append("(t.title LIKE ? OR t.description LIKE ?)")
-            token = f"%{search.strip()[:100]}%"; params.extend((token, token))
+            where.append("(t.external_id LIKE ? OR t.title LIKE ? OR t.description LIKE ?)")
+            token = f"%{search.strip()[:100]}%"; params.extend((token, token, token))
         rows = conn.execute(
             f"""SELECT t.*,u.display_name AS creator_name FROM team_tasks t
             LEFT JOIN users u ON u.id=t.created_by WHERE {' AND '.join(where)}
@@ -215,6 +281,7 @@ def task_create(payload: dict[str, Any], request: Request) -> dict[str, Any]:
     with transaction() as conn:
         season_id = current_season_id(conn); task_id = new_id("task")
         try:
+            _validate_task_external_id(conn, clean["external_id"], season_id)
             _validate_task_links(conn, task_id, clean, season_id)
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
@@ -245,6 +312,7 @@ def task_update(task_id: str, payload: dict[str, Any], request: Request) -> dict
         if not _can_manage_task(auth, item):
             raise HTTPException(403, "只能修改自己创建或负责的任务")
         try:
+            _validate_task_external_id(conn, clean["external_id"], item["season_id"], task_id)
             _validate_task_links(conn, task_id, clean, item["season_id"])
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
@@ -391,25 +459,31 @@ def _pick(row: dict[str, str], *names: str) -> str:
 
 
 def _task_import_rows(rows: list[dict[str, str]]) -> tuple[list[dict[str, Any]], list[str]]:
-    result: list[dict[str, Any]] = []; errors: list[str] = []
+    result: list[dict[str, Any]] = []
+    errors: list[str] = []
     for number, row in enumerate(rows, 2):
         try:
             title = _pick(row, "任务名称", "任务", "title")
             if not title:
                 raise ValueError("缺少任务名称")
-            progress_text = _pick(row, "进度", "progress").replace("%", "") or "0"
+            progress_source = _pick(row, "进度", "完成度", "progress") or "0"
+            progress_value = float(progress_source.replace("%", ""))
+            if "%" not in progress_source and 0 < progress_value < 1:
+                progress_value *= 100
             item = {
-                "external_id": _pick(row, "任务编号", "编号", "id") or f"ROW-{number}",
-                "title": title, "description": _pick(row, "描述", "备注", "description"),
-                "status": _pick(row, "状态", "status") or "todo",
+                "row_number": number,
+                "external_id": _pick(row, "任务编号", "编号", "任务ID", "id")[:100],
+                "title": title,
+                "description": _pick(row, "描述", "任务描述", "备注", "description"),
+                "status": _pick(row, "状态", "任务状态", "status") or "todo",
                 "priority": _pick(row, "优先级", "priority") or "medium",
-                "start_date": _pick(row, "开始日期", "开始时间", "startdate"),
-                "due_date": _pick(row, "截止日期", "截止时间", "deadline", "duedate"),
-                "progress": int(float(progress_text)),
-                "departments": re.split(r"[,，;；]+", _pick(row, "部门", "组别", "department")),
-                "assignee_names": re.split(r"[,，;；]+", _pick(row, "负责人", "负责人账号", "assignee")),
-                "dependency_external_ids": re.split(r"[,，;；]+", _pick(row, "前置任务", "依赖任务", "dependencies")),
-                "parent_external_id": _pick(row, "父任务", "parent"),
+                "start_date": _clean_date(_pick(row, "开始日期", "开始时间", "startdate")),
+                "due_date": _clean_date(_pick(row, "截止日期", "截止时间", "deadline", "duedate")),
+                "progress": round(progress_value),
+                "departments": [value.strip() for value in re.split(r"[,，;；]+", _pick(row, "部门", "组别", "department")) if value.strip()],
+                "assignee_names": [value.strip() for value in re.split(r"[,，;；]+", _pick(row, "负责人", "负责人账号", "assignee")) if value.strip()],
+                "dependency_external_ids": [value.strip() for value in re.split(r"[,，;；]+", _pick(row, "前置任务", "依赖任务", "dependencies")) if value.strip()],
+                "parent_external_id": _pick(row, "父任务", "父任务编号", "parent")[:100],
                 "reminder_days": [7, 3, 1, 0],
             }
             item["status"] = {"未开始": "todo", "进行中": "doing", "待验收": "review", "已完成": "done", "阻塞": "blocked"}.get(item["status"], item["status"])
@@ -419,20 +493,122 @@ def _task_import_rows(rows: list[dict[str, str]]) -> tuple[list[dict[str, Any]],
         except (ValueError, TypeError) as exc:
             errors.append(f"第 {number} 行：{exc}")
     seen: set[str] = set()
-    for number, item in enumerate(result, 2):
-        external_id = str(item["external_id"])
-        if external_id in seen:
-            errors.append(f"第 {number} 行：任务编号重复（{external_id}）")
-        seen.add(external_id)
-    known = {str(item["external_id"]) for item in result}
-    for number, item in enumerate(result, 2):
-        references = [value.strip() for value in item["dependency_external_ids"] if value.strip()]
-        if str(item["parent_external_id"] or "").strip():
-            references.append(str(item["parent_external_id"]).strip())
-        missing = sorted({value for value in references if value not in known})
-        if missing:
-            errors.append(f"第 {number} 行：引用了不存在的任务编号（{'、'.join(missing)}）")
+    for item in result:
+        external_id = str(item["external_id"]).casefold()
+        if external_id and external_id in seen:
+            errors.append(f"第 {item['row_number']} 行：任务编号重复（{item['external_id']}）")
+        if external_id:
+            seen.add(external_id)
     return result, errors
+
+
+def _xlsx_template_bytes(rows: list[list[str]]) -> bytes:
+    def column_name(number: int) -> str:
+        result = ""
+        while number:
+            number, remainder = divmod(number - 1, 26)
+            result = chr(65 + remainder) + result
+        return result
+
+    sheet_rows: list[str] = []
+    for row_number, row in enumerate(rows, 1):
+        cells = []
+        for column, value in enumerate(row, 1):
+            reference = f"{column_name(column)}{row_number}"
+            cells.append(f'<c r="{reference}" t="inlineStr"><is><t>{xml_escape(str(value))}</t></is></c>')
+        sheet_rows.append(f'<row r="{row_number}">{"".join(cells)}</row>')
+    worksheet = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+        f'<sheetData>{"".join(sheet_rows)}</sheetData></worksheet>'
+    )
+    output = io.BytesIO()
+    with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("[Content_Types].xml", '<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/></Types>')
+        archive.writestr("_rels/.rels", '<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>')
+        archive.writestr("xl/workbook.xml", '<?xml version="1.0" encoding="UTF-8"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="车队计划甘特图" sheetId="1" r:id="rId1"/></sheets></workbook>')
+        archive.writestr("xl/_rels/workbook.xml.rels", '<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/></Relationships>')
+        archive.writestr("xl/worksheets/sheet1.xml", worksheet)
+    return output.getvalue()
+
+
+def _prepare_task_import(
+    conn: sqlite3.Connection,
+    parsed: list[dict[str, Any]],
+    auth: AuthContext,
+    season_id: str,
+) -> tuple[list[dict[str, Any]], list[str], list[str]]:
+    errors: list[str] = []
+    warnings: list[str] = []
+    users = [dict(row) for row in conn.execute(
+        "SELECT id,username,display_name FROM users WHERE active=1 AND deleted_at IS NULL"
+    ).fetchall()]
+    user_candidates: dict[str, set[str]] = {}
+    for user in users:
+        for value in (user["username"], user["display_name"]):
+            user_candidates.setdefault(str(value).strip().casefold(), set()).add(str(user["id"]))
+    department_map = {
+        str(row[0]).strip().casefold(): str(row[0])
+        for row in conn.execute("SELECT name FROM departments WHERE deleted_at IS NULL").fetchall()
+    }
+    existing_rows = [dict(row) for row in conn.execute(
+        "SELECT * FROM team_tasks WHERE season_id=? AND deleted_at IS NULL", (season_id,)
+    ).fetchall()]
+    existing_map = {
+        str(row["external_id"]).strip().casefold(): row
+        for row in existing_rows if str(row.get("external_id") or "").strip()
+    }
+    id_map = dict((key, str(row["id"])) for key, row in existing_map.items())
+    for item in parsed:
+        key = str(item["external_id"]).strip().casefold()
+        if key and key not in id_map:
+            id_map[key] = new_id("task")
+
+    prepared: list[dict[str, Any]] = []
+    for item in parsed:
+        row_number = int(item["row_number"])
+        external_key = str(item["external_id"]).strip().casefold()
+        current = existing_map.get(external_key) if external_key else None
+        task_id = str(current["id"]) if current else id_map.get(external_key, new_id("task"))
+        assignee_ids: list[str] = []
+        for name in item["assignee_names"]:
+            candidates = user_candidates.get(str(name).strip().casefold(), set())
+            if len(candidates) == 1:
+                assignee_ids.append(next(iter(candidates)))
+            elif len(candidates) > 1:
+                errors.append(f"第 {row_number} 行：负责人名称不唯一（{name}），请填写账号")
+            else:
+                errors.append(f"第 {row_number} 行：找不到负责人（{name}）")
+        departments: list[str] = []
+        for name in item["departments"]:
+            canonical = department_map.get(str(name).strip().casefold())
+            if canonical:
+                departments.append(canonical)
+            else:
+                errors.append(f"第 {row_number} 行：找不到组别（{name}）")
+        dependency_ids: list[str] = []
+        for reference in item["dependency_external_ids"]:
+            target = id_map.get(str(reference).strip().casefold())
+            if target:
+                dependency_ids.append(target)
+            else:
+                errors.append(f"第 {row_number} 行：找不到前置任务编号（{reference}）")
+        parent_id = None
+        if item["parent_external_id"]:
+            parent_id = id_map.get(str(item["parent_external_id"]).strip().casefold())
+            if not parent_id:
+                errors.append(f"第 {row_number} 行：找不到父任务编号（{item['parent_external_id']}）")
+        if current and not _can_manage_task(auth, current):
+            errors.append(f"第 {row_number} 行：无权更新任务（{item['external_id']}）")
+        clean = _task_clean({**item, "assignee_user_ids": assignee_ids, "departments": departments,
+                             "dependency_ids": dependency_ids, "parent_id": parent_id})
+        prepared.append({"task_id": task_id, "action": "update" if current else "create", "clean": clean,
+                         "row_number": row_number, "title": clean["title"], "external_id": clean["external_id"],
+                         "start_date": clean["start_date"], "due_date": clean["due_date"], "progress": clean["progress"],
+                         "assignee_names": item["assignee_names"], "departments": departments})
+    if any(not str(item["external_id"]).strip() for item in parsed):
+        warnings.append("未填写任务编号的行会作为新任务导入，后续无法按编号自动更新")
+    return prepared, list(dict.fromkeys(errors)), warnings
 
 
 @router.get("/plans/import-template")
@@ -446,8 +622,28 @@ def task_import_template(request: Request) -> StreamingResponse:
                              headers={"Content-Disposition": "attachment; filename*=UTF-8''YXRT-Gantt-Template.csv"})
 
 
+@router.get("/plans/import-template.xlsx")
+def task_import_template_xlsx(request: Request) -> StreamingResponse:
+    get_auth(request)
+    rows = [
+        ["任务编号", "任务名称", "任务描述", "组别", "负责人账号", "开始日期", "截止日期", "优先级", "状态", "进度", "前置任务", "父任务"],
+        ["TASK-001", "完成电池箱模型修改", "检查安装空间", "电气部", "admin", "2026-09-01", "2026-09-07", "高", "进行中", "40%", "", ""],
+        ["TASK-002", "整车低压联调", "完成通讯测试", "电气部", "admin", "2026-09-08", "2026-09-12", "紧急", "未开始", "0%", "TASK-001", "TASK-001"],
+    ]
+    return StreamingResponse(
+        iter([_xlsx_template_bytes(rows)]),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": "attachment; filename=YXRT-Gantt-Template.xlsx"},
+    )
+
+
 @router.post("/plans/import")
-async def task_import(request: Request, file: UploadFile = File(...), apply: bool = Form(False)) -> dict[str, Any]:
+async def task_import(
+    request: Request,
+    file: UploadFile = File(...),
+    apply: bool = Form(False),
+    strategy: str = Form("upsert"),
+) -> dict[str, Any]:
     auth = get_auth(request); require_csrf(request, auth); require_write(auth)
     data = await file.read()
     if len(data) > 20 * 1024 * 1024:
@@ -456,37 +652,53 @@ async def task_import(request: Request, file: UploadFile = File(...), apply: boo
         parsed, errors = _task_import_rows(_tabular_rows(file.filename or "", data))
     except (ValueError, zipfile.BadZipFile, ElementTree.ParseError) as exc:
         raise HTTPException(400, str(exc)) from exc
-    if not apply:
-        return {"items": parsed[:200], "count": len(parsed), "errors": errors[:100], "can_apply": bool(parsed and not errors)}
-    if errors:
-        raise HTTPException(400, "导入预检存在错误，请修正后重试")
     with transaction() as conn:
-        season_id = current_season_id(conn); now = utc_now(); device_id = get_device_id(conn)
-        users = [dict(row) for row in conn.execute("SELECT id,username,display_name FROM users WHERE active=1 AND deleted_at IS NULL").fetchall()]
-        user_map = {str(value).strip().lower(): item["id"] for item in users for value in (item["username"], item["display_name"])}
-        id_map = {item["external_id"]: new_id("task") for item in parsed}
-        inserted: list[str] = []
-        pending_parents: list[tuple[str, str | None]] = []
-        for raw in parsed:
-            raw["assignee_user_ids"] = [user_map[name.strip().lower()] for name in raw.pop("assignee_names") if name.strip().lower() in user_map]
-            raw["dependency_ids"] = [id_map[value.strip()] for value in raw.pop("dependency_external_ids") if value.strip() in id_map]
-            parent_external = raw.pop("parent_external_id", "")
-            requested_parent_id = id_map.get(parent_external)
-            raw["parent_id"] = None
-            external_id = raw.pop("external_id")
-            clean = _task_clean(raw); task_id = id_map[external_id]
-            item = {"id": task_id, "season_id": season_id, **clean, "created_by": auth.user["id"], "created_at": now,
-                    "updated_at": now, "version": 1, "device_id": device_id, "deleted_at": None}
-            columns = list(item)
-            conn.execute(f"INSERT INTO team_tasks({','.join(columns)}) VALUES({','.join('?' for _ in columns)})", tuple(item[k] for k in columns))
-            pending_parents.append((task_id, requested_parent_id)); inserted.append(task_id)
-        for task_id, parent_id in pending_parents:
-            if parent_id:
-                conn.execute("UPDATE team_tasks SET parent_id=? WHERE id=?", (parent_id, task_id))
-            item = row_dict(conn, "team_tasks", task_id)
-            enqueue_sync_event(conn, "team_tasks", task_id, "upsert", item or {})
-        audit(conn, auth.user["id"], "import", "team_task", None, {"count": len(inserted), "filename": file.filename})
-    return {"ok": True, "count": len(inserted)}
+        season_id = current_season_id(conn)
+        prepared, context_errors, warnings = _prepare_task_import(conn, parsed, auth, season_id)
+        errors.extend(context_errors)
+        if strategy == "create_only":
+            for item in prepared:
+                if item["action"] == "update":
+                    errors.append(f"第 {item['row_number']} 行：任务编号已存在，新增模式不会覆盖（{item['external_id']}）")
+        preview_items = [{key: value for key, value in item.items() if key != "clean"} for item in prepared]
+        create_count = sum(1 for item in prepared if item["action"] == "create")
+        update_count = len(prepared) - create_count
+        if not apply:
+            return {"items": preview_items[:500], "count": len(prepared), "create_count": create_count,
+                    "update_count": update_count, "errors": list(dict.fromkeys(errors))[:200],
+                    "warnings": warnings[:100], "can_apply": bool(prepared and not errors)}
+        if errors:
+            raise HTTPException(400, "导入预检存在错误，请修正后重试")
+        now = utc_now(); device_id = get_device_id(conn)
+        for item in prepared:
+            task_id = item["task_id"]
+            clean = dict(item["clean"])
+            clean["parent_id"] = None
+            clean["dependency_ids_json"] = "[]"
+            if item["action"] == "create":
+                record = {"id": task_id, "season_id": season_id, **clean, "created_by": auth.user["id"],
+                          "created_at": now, "updated_at": now, "version": 1, "device_id": device_id, "deleted_at": None}
+                columns = list(record)
+                conn.execute(f"INSERT INTO team_tasks({','.join(columns)}) VALUES({','.join('?' for _ in columns)})",
+                             tuple(record[key] for key in columns))
+            else:
+                assignments = ",".join(f"{key}=?" for key in clean)
+                conn.execute(f"UPDATE team_tasks SET {assignments},updated_at=?,version=version+1,device_id=? WHERE id=?",
+                             (*clean.values(), now, device_id, task_id))
+        for item in prepared:
+            task_id = item["task_id"]
+            clean = item["clean"]
+            try:
+                _validate_task_links(conn, task_id, clean, season_id)
+            except ValueError as exc:
+                raise HTTPException(400, f"第 {item['row_number']} 行：{exc}") from exc
+            conn.execute("UPDATE team_tasks SET parent_id=?,dependency_ids_json=? WHERE id=?",
+                         (clean["parent_id"], clean["dependency_ids_json"], task_id))
+            updated = row_dict(conn, "team_tasks", task_id)
+            enqueue_sync_event(conn, "team_tasks", task_id, "upsert", updated or {})
+        audit(conn, auth.user["id"], "import", "team_task", None,
+              {"count": len(prepared), "created": create_count, "updated": update_count, "filename": file.filename})
+    return {"ok": True, "count": len(prepared), "created_count": create_count, "updated_count": update_count}
 
 
 def _inventory_manager_ids(conn: sqlite3.Connection) -> list[str]:
@@ -516,10 +728,17 @@ def inventory_meta(request: Request) -> dict[str, Any]:
             "SELECT id,username,display_name,role FROM users WHERE active=1 AND deleted_at IS NULL ORDER BY display_name"
         ).fetchall()]
         config = json.loads(setting(conn, "mouser_config", "{}") or "{}")
+        categories = [str(row[0]) for row in conn.execute(
+            "SELECT DISTINCT category FROM inventory_components WHERE deleted_at IS NULL AND trim(category)<>'' ORDER BY category"
+        ).fetchall()]
+        seasons = [dict(row) for row in conn.execute(
+            "SELECT id,name,active FROM seasons WHERE deleted_at IS NULL ORDER BY sort_order DESC,created_at DESC"
+        ).fetchall()]
         return {"user": {"id": auth.user["id"], "role": auth.user["role"], "display_name": auth.user["display_name"]},
                 "csrf_token": auth.session["csrf_token"], "users": users, "manager_ids": _inventory_manager_ids(conn),
                 "can_manage": _is_inventory_manager(conn, auth), "mouser_enabled": bool(config.get("enabled")),
-                "mouser_configured": bool(config.get("api_key_encrypted")), "version": __version__}
+                "mouser_configured": bool(config.get("api_key_encrypted")), "categories": categories,
+                "seasons": seasons, "current_season_id": current_season_id(conn), "version": __version__}
 
 
 @router.put("/admin/inventory/managers")
@@ -535,7 +754,14 @@ def inventory_managers_save(payload: dict[str, Any], request: Request) -> dict[s
 
 
 @router.get("/inventory/components")
-def components_list(request: Request, search: str = "", category: str = "", low_stock: bool = False) -> dict[str, Any]:
+def components_list(
+    request: Request,
+    search: str = "",
+    category: str = "",
+    supplier: str = "",
+    location: str = "",
+    low_stock: bool = False,
+) -> dict[str, Any]:
     get_auth(request)
     with transaction(immediate=False) as conn:
         params: list[Any] = []; where = ["deleted_at IS NULL"]
@@ -543,6 +769,10 @@ def components_list(request: Request, search: str = "", category: str = "", low_
             token = f"%{search.strip()[:120]}%"; where.append("(name LIKE ? OR manufacturer_part_no LIKE ? OR mouser_part_no LIKE ? OR manufacturer LIKE ?)"); params.extend([token] * 4)
         if category.strip():
             where.append("category=?"); params.append(category.strip()[:100])
+        if supplier.strip():
+            where.append("supplier LIKE ?"); params.append(f"%{supplier.strip()[:120]}%")
+        if location.strip():
+            where.append("location LIKE ?"); params.append(f"%{location.strip()[:120]}%")
         if low_stock:
             where.append("quantity<=minimum_quantity")
         rows = conn.execute(f"SELECT * FROM inventory_components WHERE {' AND '.join(where)} ORDER BY category,name LIMIT 5000", tuple(params)).fetchall()
@@ -550,6 +780,32 @@ def components_list(request: Request, search: str = "", category: str = "", low_
         return {"items": items, "count": len(items), "quantity": sum(float(item["quantity"]) for item in items),
                 "value_cents": sum(int(item["stock_value_cents"]) for item in items),
                 "low_stock_count": sum(1 for item in items if item["low_stock"])}
+
+
+@router.get("/inventory/statistics")
+def inventory_statistics(request: Request) -> dict[str, Any]:
+    get_auth(request)
+    with transaction(immediate=False) as conn:
+        categories = [dict(row) for row in conn.execute(
+            """SELECT category,COUNT(*) AS component_count,SUM(quantity) AS quantity,
+            SUM(ROUND(quantity*unit_cost_cents)) AS value_cents,
+            SUM(CASE WHEN quantity<=minimum_quantity THEN 1 ELSE 0 END) AS low_stock_count
+            FROM inventory_components WHERE deleted_at IS NULL GROUP BY category ORDER BY value_cents DESC,category"""
+        ).fetchall()]
+        seasons = [dict(row) for row in conn.execute(
+            """SELECT s.id,s.name,
+            SUM(CASE WHEN m.status='applied' AND m.movement_type='in' THEN m.quantity ELSE 0 END) AS stock_in,
+            SUM(CASE WHEN m.status='applied' AND m.movement_type='out' THEN m.quantity ELSE 0 END) AS stock_out,
+            COUNT(CASE WHEN m.status='pending' THEN 1 END) AS pending_count
+            FROM seasons s LEFT JOIN inventory_movements m ON m.season_id=s.id AND m.deleted_at IS NULL
+            WHERE s.deleted_at IS NULL GROUP BY s.id,s.name,s.sort_order ORDER BY s.sort_order DESC,s.created_at DESC"""
+        ).fetchall()]
+        recent_shortages = [dict(row) for row in conn.execute(
+            """SELECT id,name,category,quantity,minimum_quantity,unit,location
+            FROM inventory_components WHERE deleted_at IS NULL AND quantity<=minimum_quantity
+            ORDER BY (minimum_quantity-quantity) DESC,name LIMIT 20"""
+        ).fetchall()]
+        return {"categories": categories, "seasons": seasons, "shortages": recent_shortages}
 
 
 def _component_clean(payload: dict[str, Any]) -> dict[str, Any]:
@@ -567,8 +823,174 @@ def _component_clean(payload: dict[str, Any]) -> dict[str, Any]:
             "mouser_part_no": str(payload.get("mouser_part_no") or "").strip()[:180], "package": str(payload.get("package") or "").strip()[:120],
             "parameters": str(payload.get("parameters") or "").strip()[:1000], "location": str(payload.get("location") or "").strip()[:200],
             "unit": str(payload.get("unit") or "个").strip()[:30], "minimum_quantity": minimum, "unit_cost_cents": unit_cost,
-            "image_url": str(payload.get("image_url") or "").strip()[:1000], "datasheet_url": str(payload.get("datasheet_url") or "").strip()[:1000],
+            "supplier": str(payload.get("supplier") or "").strip()[:180],
+            "image_url": _clean_url(payload.get("image_url"), "产品图片"),
+            "datasheet_url": _clean_url(payload.get("datasheet_url"), "数据手册"),
+            "purchase_url": _clean_url(payload.get("purchase_url"), "采购"),
             "note": str(payload.get("note") or "").strip()[:5000]}
+
+
+def _number(value: Any, label: str, *, minimum: float = 0) -> float:
+    text = str(value or "0").strip().replace(",", "").replace("￥", "").replace("¥", "").replace("元", "")
+    try:
+        number = float(text or 0)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{label}格式不正确") from exc
+    if number < minimum:
+        raise ValueError(f"{label}不能小于 {minimum:g}")
+    return number
+
+
+def _component_import_rows(rows: list[dict[str, str]]) -> tuple[list[dict[str, Any]], list[str]]:
+    result: list[dict[str, Any]] = []
+    errors: list[str] = []
+    identities: set[str] = set()
+    for number, row in enumerate(rows, 2):
+        try:
+            raw = {
+                "row_number": number,
+                "name": _pick(row, "元件名称", "名称", "name", "description"),
+                "category": _pick(row, "分类", "类别", "category") or "未分类",
+                "manufacturer": _pick(row, "制造商", "品牌", "manufacturer"),
+                "manufacturer_part_no": _pick(row, "制造商型号", "型号", "MPN", "manufacturerpartnumber"),
+                "mouser_part_no": _pick(row, "贸泽料号", "mouserpartnumber"),
+                "package": _pick(row, "封装", "package"),
+                "parameters": _pick(row, "参数", "规格", "parameters"),
+                "location": _pick(row, "库位", "位置", "location"),
+                "unit": _pick(row, "单位", "unit") or "个",
+                "quantity": _number(_pick(row, "库存数量", "入库数量", "数量", "quantity", "qty"), "数量"),
+                "minimum_quantity": _number(_pick(row, "最低库存", "预警阈值", "minimumquantity"), "最低库存"),
+                "unit_cost": _number(_pick(row, "参考单价", "单价", "unitprice", "cost"), "单价"),
+                "supplier": _pick(row, "供应商", "supplier"),
+                "image_url": _pick(row, "图片链接", "产品图片", "imageurl"),
+                "datasheet_url": _pick(row, "数据手册", "数据手册链接", "datasheeturl"),
+                "purchase_url": _pick(row, "采购链接", "购买链接", "purchaseurl"),
+                "note": _pick(row, "备注", "说明", "note"),
+            }
+            clean = _component_clean(raw)
+            identity = (clean["mouser_part_no"] or clean["manufacturer_part_no"] or f"{clean['name']}|{clean['package']}").casefold()
+            if identity in identities:
+                raise ValueError("同一文件中存在重复元件")
+            identities.add(identity)
+            result.append({**raw, **clean})
+        except (TypeError, ValueError) as exc:
+            errors.append(f"第 {number} 行：{exc}")
+    return result, errors
+
+
+@router.get("/inventory/import-template.xlsx")
+def component_import_template(request: Request) -> StreamingResponse:
+    get_auth(request)
+    rows = [
+        ["元件名称", "分类", "制造商", "制造商型号", "贸泽料号", "封装", "参数", "库位", "单位", "库存数量", "最低库存", "参考单价", "供应商", "图片链接", "数据手册链接", "采购链接", "备注"],
+        ["霍尔电流传感器", "传感器", "Allegro", "ACS758LCB-100B", "", "CB-5", "100A 双向", "A-01-03", "个", "10", "2", "68.5", "", "", "", "", "示例数据，可删除"],
+    ]
+    return StreamingResponse(
+        iter([_xlsx_template_bytes(rows)]),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": "attachment; filename=YXRT-Component-Template.xlsx"},
+    )
+
+
+@router.post("/inventory/components/import")
+async def component_import(
+    request: Request,
+    file: UploadFile = File(...),
+    mode: str = Form("catalog"),
+    apply: bool = Form(False),
+) -> dict[str, Any]:
+    auth = get_auth(request); require_csrf(request, auth); require_write(auth)
+    if mode not in {"catalog", "stock_in"}:
+        raise HTTPException(400, "导入模式不正确")
+    data = await file.read()
+    if len(data) > 30 * 1024 * 1024:
+        raise HTTPException(413, "元件表不能超过 30MB")
+    try:
+        items, errors = _component_import_rows(_tabular_rows(file.filename or "", data))
+    except (ValueError, zipfile.BadZipFile, ElementTree.ParseError) as exc:
+        raise HTTPException(400, str(exc)) from exc
+    with transaction() as conn:
+        can_manage = _is_inventory_manager(conn, auth)
+        preview: list[dict[str, Any]] = []
+        matched_ids: set[str] = set()
+        for item in items:
+            match = _match_component(conn, item)
+            if match and str(match["id"]) in matched_ids:
+                errors.append(f"第 {item['row_number']} 行：与文件中另一行匹配到同一元件档案")
+            if match:
+                matched_ids.add(str(match["id"]))
+            preview.append({"row_number": item["row_number"], "name": item["name"],
+                            "manufacturer_part_no": item["manufacturer_part_no"], "category": item["category"],
+                            "package": item["package"], "quantity": item["quantity"],
+                            "available": float(match["quantity"]) if match else 0,
+                            "component_id": str(match["id"]) if match else "",
+                            "action": "update" if match else "create"})
+        if not apply:
+            return {"items": preview[:500], "count": len(preview),
+                    "create_count": sum(1 for item in preview if item["action"] == "create"),
+                    "update_count": sum(1 for item in preview if item["action"] == "update"),
+                    "errors": list(dict.fromkeys(errors))[:200], "mode": mode,
+                    "can_apply": bool(preview and not errors and can_manage)}
+        if not can_manage:
+            raise HTTPException(403, "仅元件库管理员可导入元件档案")
+        if errors:
+            raise HTTPException(400, "导入预检存在错误，请修正后重试")
+        now = utc_now(); device_id = get_device_id(conn); created = 0; updated = 0; movements = 0
+        for raw, preview_item in zip(items, preview, strict=True):
+            clean = _component_clean(raw)
+            component_id = preview_item["component_id"]
+            if component_id:
+                assignments = ",".join(f"{key}=?" for key in clean)
+                conn.execute(f"UPDATE inventory_components SET {assignments},updated_at=?,version=version+1,device_id=? WHERE id=?",
+                             (*clean.values(), now, device_id, component_id))
+                updated += 1
+            else:
+                component_id = new_id("component")
+                component = {"id": component_id, **clean, "quantity": 0, "mouser_cache_json": "{}",
+                             "mouser_cached_at": "", "created_by": auth.user["id"], "created_at": now,
+                             "updated_at": now, "version": 1, "device_id": device_id, "deleted_at": None}
+                columns = list(component)
+                conn.execute(f"INSERT INTO inventory_components({','.join(columns)}) VALUES({','.join('?' for _ in columns)})",
+                             tuple(component[key] for key in columns))
+                created += 1
+            movement_applied = mode == "stock_in" and float(raw["quantity"]) > 0
+            if movement_applied:
+                movement_id = new_id("movement")
+                movement = {"id": movement_id, "component_id": component_id, "season_id": current_season_id(conn),
+                            "requested_by": auth.user["id"], "approved_by": None, "movement_type": "in",
+                            "status": "pending", "quantity": float(raw["quantity"]),
+                            "unit_cost_cents": int(clean["unit_cost_cents"]), "batch_no": "元件表批量导入",
+                            "project_name": "", "note": f"来源：{file.filename or '元件表'}", "created_at": now,
+                            "updated_at": now, "version": 1, "device_id": device_id, "deleted_at": None}
+                columns = list(movement)
+                conn.execute(f"INSERT INTO inventory_movements({','.join(columns)}) VALUES({','.join('?' for _ in columns)})",
+                             tuple(movement[key] for key in columns))
+                _apply_movement(conn, movement, auth.user["id"])
+                movements += 1
+            else:
+                component_row = row_dict(conn, "inventory_components", component_id)
+                enqueue_sync_event(conn, "inventory_components", component_id, "upsert", component_row or {})
+        audit(conn, auth.user["id"], "component_import", "inventory", None,
+              {"count": len(preview), "created": created, "updated": updated, "movements": movements, "filename": file.filename})
+    return {"ok": True, "count": len(preview), "created_count": created,
+            "updated_count": updated, "movement_count": movements}
+
+
+@router.get("/inventory/export.csv")
+def component_export(request: Request) -> StreamingResponse:
+    get_auth(request)
+    with transaction(immediate=False) as conn:
+        rows = conn.execute("SELECT * FROM inventory_components WHERE deleted_at IS NULL ORDER BY category,name").fetchall()
+    output = io.StringIO(); writer = csv.writer(output)
+    writer.writerow(["元件名称", "分类", "制造商", "制造商型号", "贸泽料号", "封装", "参数", "库位", "单位", "库存数量", "最低库存", "参考单价", "供应商", "图片链接", "数据手册链接", "采购链接", "备注"])
+    for row in rows:
+        writer.writerow([row["name"], row["category"], row["manufacturer"], row["manufacturer_part_no"],
+                         row["mouser_part_no"], row["package"], row["parameters"], row["location"], row["unit"],
+                         row["quantity"], row["minimum_quantity"], int(row["unit_cost_cents"]) / 100,
+                         row["supplier"], row["image_url"], row["datasheet_url"], row["purchase_url"], row["note"]])
+    data = ("\ufeff" + output.getvalue()).encode("utf-8")
+    return StreamingResponse(iter([data]), media_type="text/csv; charset=utf-8",
+                             headers={"Content-Disposition": "attachment; filename*=UTF-8''YXRT-Components.csv"})
 
 
 @router.post("/inventory/components")
@@ -643,12 +1065,20 @@ def _apply_movement(conn: sqlite3.Connection, movement: dict[str, Any], approver
 
 
 @router.get("/inventory/movements")
-def movements_list(request: Request, component_id: str = "", status: str = "") -> dict[str, Any]:
+def movements_list(
+    request: Request,
+    component_id: str = "",
+    season_id: str = "",
+    status: str = "",
+    movement_type: str = "",
+) -> dict[str, Any]:
     get_auth(request)
     with transaction(immediate=False) as conn:
         params: list[Any] = []; where = ["m.deleted_at IS NULL"]
         if component_id: where.append("m.component_id=?"); params.append(component_id)
+        if season_id: where.append("m.season_id=?"); params.append(season_id)
         if status in {"pending", "applied", "rejected"}: where.append("m.status=?"); params.append(status)
+        if movement_type in MOVEMENT_TYPES: where.append("m.movement_type=?"); params.append(movement_type)
         rows = conn.execute(f"""SELECT m.*,c.name AS component_name,c.unit,u.display_name AS requester_name
             FROM inventory_movements m JOIN inventory_components c ON c.id=m.component_id
             LEFT JOIN users u ON u.id=m.requested_by WHERE {' AND '.join(where)} ORDER BY m.created_at DESC LIMIT 1000""", tuple(params)).fetchall()

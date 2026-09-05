@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1" />
     <title>元件汇总库 · 燕翔车队</title>
-    <link rel="stylesheet" href="/static/modules.css?v=2.4.0" />
+    <link rel="stylesheet" href="/static/modules.css?v=2.4.1" />
   </head>
   <body>
     <div class="module-shell">
@@ -19,7 +19,7 @@
           ><a href="/stories">故事模式</a>
         </nav>
         <footer>
-          YXRT COMPONENT VAULT · <span id="versionText">V2.4.0</span>
+          YXRT COMPONENT VAULT · <span id="versionText">V2.4.1</span>
         </footer>
       </aside>
       <main class="module-main">
@@ -30,6 +30,9 @@
           </div>
           <div class="actions">
             <button id="mouserBtn" class="btn">贸泽资料</button
+            ><a href="/api/inventory/export.csv" class="btn">导出清单</a
+            ><button id="componentImportBtn" class="btn hidden">
+              导入元件表</button
             ><button id="bomBtn" class="btn">导入 BOM</button
             ><button id="movementBtn" class="btn">出入库 / 领用</button
             ><button id="addComponentBtn" class="btn primary">
@@ -57,7 +60,9 @@
               <input
                 id="componentSearch"
                 placeholder="搜索名称、制造商型号、贸泽料号"
-              /><input id="categoryFilter" placeholder="分类筛选" /><label
+              /><select id="categoryFilter"><option value="">全部分类</option></select
+              ><input id="supplierFilter" placeholder="供应商筛选" />
+              <input id="locationFilter" placeholder="库位筛选" /><label
                 class="btn"
                 ><input id="lowStockOnly" type="checkbox" /> 仅低库存</label
               ><button id="refreshBtn" class="btn">刷新</button>
@@ -81,11 +86,25 @@
                     <th>库位</th>
                     <th>库存</th>
                     <th>单价</th>
+                    <th>供应商 / 资料</th>
                     <th>操作</th>
                   </tr>
                 </thead>
                 <tbody id="componentRows"></tbody>
               </table>
+            </div>
+          </section>
+          <section class="panel">
+            <div class="panel-head">
+              <div>
+                <h2>跨赛季库存统计</h2>
+                <small>库存档案跨赛季保留，出入库流水按赛季分别统计</small>
+              </div>
+            </div>
+            <div class="inventory-insights">
+              <div><h3>分类分布</h3><div id="categoryStats" class="stat-list"></div></div>
+              <div><h3>赛季出入库</h3><div id="seasonStats" class="stat-list"></div></div>
+              <div><h3>补货清单</h3><div id="shortageStats" class="stat-list"></div></div>
             </div>
           </section>
           <section class="panel">
@@ -160,6 +179,8 @@
               min="0"
               step="0.01"
               value="0" /></label
+          ><label class="field"
+            >供应商<input id="componentSupplier" maxlength="180" /></label
           ><label class="field wide"
             >参数<input id="componentParameters" maxlength="1000" /></label
           ><label class="field"
@@ -167,6 +188,12 @@
           ><label class="field"
             >产品图片链接<input id="componentImage" type="url" /></label
           ><label class="field wide"
+            >采购链接<input id="componentPurchase" type="url" /></label
+          <div
+            id="componentResourcePreview"
+            class="component-resource-preview field wide hidden"
+          ></div>
+          <label class="field wide"
             >备注<textarea id="componentNote"></textarea>
           </label>
         </div>
@@ -183,6 +210,65 @@
           ><button class="btn primary">保存档案</button>
         </footer>
       </form>
+    </dialog>
+    <dialog id="componentImportDialog">
+      <div class="dialog-card">
+        <header>
+          <h2>Excel 元件档案批量导入</h2>
+          <button
+            class="close"
+            type="button"
+            data-close="componentImportDialog"
+          >
+            ×
+          </button>
+        </header>
+        <div class="dialog-body">
+          <p>
+            支持 XLSX、CSV、TSV；按贸泽料号、制造商型号、名称与封装依次匹配，先预检后写入。
+          </p>
+          <div class="actions">
+            <a class="btn primary" href="/api/inventory/import-template.xlsx"
+              >下载 Excel 模板</a
+            ><input
+              id="componentImportFile"
+              type="file"
+              accept=".xlsx,.csv,.tsv"
+            />
+          </div>
+          <label class="field import-strategy"
+            >导入方式<select id="componentImportMode">
+              <option value="catalog">更新元件档案，保留现有库存</option>
+              <option value="stock_in">
+                更新档案，并把表中数量作为采购入库
+              </option>
+            </select></label
+          >
+          <div
+            id="componentImportSummary"
+            class="import-summary hidden"
+          ></div>
+          <div id="componentImportPreview" class="preview-list empty">
+            请选择文件并预检
+          </div>
+        </div>
+        <footer>
+          <button
+            type="button"
+            class="btn"
+            data-close="componentImportDialog"
+          >
+            取消</button
+          ><button id="componentImportPreviewBtn" class="btn">预检</button
+          ><button
+            id="componentImportApplyBtn"
+            class="btn primary"
+            disabled
+          >
+            确认导入
+          </button>
+        </footer>
+      </div>
     </dialog>
     <dialog id="movementDialog">
       <form id="movementForm" class="dialog-card">
@@ -359,6 +445,6 @@
       </div>
     </dialog>
     <div id="toast" class="toast"></div>
-    <script src="/static/components.js?v=2.4.0"></script>
+    <script src="/static/components.js?v=2.4.1"></script>
   </body>
 </html>

@@ -482,6 +482,7 @@ CREATE TABLE IF NOT EXISTS story_assets (
 CREATE TABLE IF NOT EXISTS team_tasks (
   id TEXT PRIMARY KEY,
   season_id TEXT NOT NULL REFERENCES seasons(id),
+  external_id TEXT NOT NULL DEFAULT '',
   title TEXT NOT NULL,
   description TEXT NOT NULL DEFAULT '',
   status TEXT NOT NULL DEFAULT 'todo' CHECK(status IN ('todo','doing','review','done','blocked')),
@@ -528,8 +529,10 @@ CREATE TABLE IF NOT EXISTS inventory_components (
   quantity REAL NOT NULL DEFAULT 0,
   minimum_quantity REAL NOT NULL DEFAULT 0,
   unit_cost_cents INTEGER NOT NULL DEFAULT 0,
+  supplier TEXT NOT NULL DEFAULT '',
   image_url TEXT NOT NULL DEFAULT '',
   datasheet_url TEXT NOT NULL DEFAULT '',
+  purchase_url TEXT NOT NULL DEFAULT '',
   note TEXT NOT NULL DEFAULT '',
   mouser_cache_json TEXT NOT NULL DEFAULT '{}',
   mouser_cached_at TEXT NOT NULL DEFAULT '',
@@ -804,6 +807,22 @@ def _migrate_v240_schema(conn: sqlite3.Connection) -> None:
     conn.execute("INSERT OR REPLACE INTO meta(key,value) VALUES('schema_version','10')")
 
 
+def _migrate_v241_schema(conn: sqlite3.Connection) -> None:
+    _ensure_column(conn, "team_tasks", "external_id", "TEXT NOT NULL DEFAULT ''")
+    _ensure_column(conn, "inventory_components", "supplier", "TEXT NOT NULL DEFAULT ''")
+    _ensure_column(conn, "inventory_components", "purchase_url", "TEXT NOT NULL DEFAULT ''")
+    conn.execute(
+        """CREATE UNIQUE INDEX IF NOT EXISTS idx_team_tasks_external_id
+        ON team_tasks(season_id,external_id)
+        WHERE deleted_at IS NULL AND trim(external_id)<>''"""
+    )
+    conn.execute(
+        """CREATE INDEX IF NOT EXISTS idx_inventory_supplier
+        ON inventory_components(supplier,name) WHERE deleted_at IS NULL"""
+    )
+    conn.execute("INSERT OR REPLACE INTO meta(key,value) VALUES('schema_version','11')")
+
+
 def audit(
     conn: sqlite3.Connection,
     user_id: str | None,
@@ -858,7 +877,7 @@ def row_dict(conn: sqlite3.Connection, table: str, entity_id: str, id_column: st
 def snapshot_state(conn: sqlite3.Connection) -> dict[str, Any]:
     season_id = current_season_id(conn)
     state: dict[str, Any] = {
-        "schema_version": 10,
+        "schema_version": 11,
         "season_id": season_id,
         "captured_at": utc_now(),
         "tables": {},
@@ -1235,8 +1254,8 @@ def init_db() -> None:
             modules_ready = conn.execute(
                 "SELECT 1 FROM sqlite_master WHERE type='table' AND name='team_tasks'"
             ).fetchone() if stories_ready else None
-            if schema_row and str(schema_row[0]) == "10" and stories_ready and modules_ready:
-                logger.info("database ready schema_version=10 path=%s", DB_PATH)
+            if schema_row and str(schema_row[0]) == "11" and stories_ready and modules_ready:
+                logger.info("database ready schema_version=11 path=%s", DB_PATH)
                 return
             logger.info("database migration started from=%s path=%s", schema_row[0] if schema_row else "unknown", DB_PATH)
             conn.executescript(SCHEMA)
@@ -1249,8 +1268,9 @@ def init_db() -> None:
             _migrate_v23_schema(conn)
             _migrate_v239_schema(conn)
             _migrate_v240_schema(conn)
+            _migrate_v241_schema(conn)
             conn.commit()
-            logger.info("database migration completed schema_version=10")
+            logger.info("database migration completed schema_version=11")
         except Exception:
             conn.rollback()
             logger.exception("database initialization failed")

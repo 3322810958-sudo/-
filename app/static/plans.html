@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1" />
     <title>车队计划中心 · 燕翔车队</title>
-    <link rel="stylesheet" href="/static/modules.css?v=2.4.0" />
+    <link rel="stylesheet" href="/static/modules.css?v=2.4.1" />
   </head>
   <body>
     <div class="module-shell">
@@ -18,7 +18,7 @@
           ><a href="/components">元件库</a><a href="/stories">故事模式</a>
         </nav>
         <footer>
-          YXRT TEAM OPERATIONS · <span id="versionText">V2.4.0</span>
+          YXRT TEAM OPERATIONS · <span id="versionText">V2.4.1</span>
         </footer>
       </aside>
       <main class="module-main">
@@ -52,7 +52,7 @@
           </section>
           <section class="panel">
             <div class="filters">
-              <input id="taskSearch" placeholder="搜索任务名称或描述" /><select
+              <input id="taskSearch" placeholder="搜索编号、任务名称或描述" /><select
                 id="statusFilter"
               >
                 <option value="">全部状态</option>
@@ -61,8 +61,17 @@
                 <option value="review">待验收</option>
                 <option value="blocked">阻塞</option>
                 <option value="done">已完成</option></select
+              ><select id="priorityFilter">
+                <option value="">全部优先级</option>
+                <option value="urgent">紧急</option>
+                <option value="high">高</option>
+                <option value="medium">中</option>
+                <option value="low">低</option></select
+              ><select id="departmentFilter"><option value="">全部组别</option></select
+              ><select id="assigneeFilter"><option value="">全部负责人</option></select
               ><select id="viewMode">
                 <option value="gantt">甘特图</option>
+                <option value="board">任务看板</option>
                 <option value="table">任务清单</option></select
               ><button id="refreshBtn" class="btn">刷新</button>
             </div>
@@ -76,6 +85,12 @@
             </div>
             <div id="gantt" class="gantt-wrap"></div>
           </section>
+          <section id="boardPanel" class="panel hidden">
+            <div class="panel-head">
+              <div><h2>任务状态看板</h2><small>按状态快速查看当前赛季任务</small></div>
+            </div>
+            <div id="taskBoard" class="task-board"></div>
+          </section>
           <section id="tablePanel" class="panel hidden">
             <div class="panel-head">
               <h2>任务清单</h2>
@@ -85,6 +100,7 @@
               <table class="data-table">
                 <thead>
                   <tr>
+                    <th>编号</th>
                     <th>任务</th>
                     <th>负责人</th>
                     <th>部门</th>
@@ -108,7 +124,9 @@
           <button class="close" type="button" data-close="taskDialog">×</button>
         </header>
         <div class="dialog-body form-grid">
-          <input id="taskId" type="hidden" /><label class="field wide"
+          <input id="taskId" type="hidden" /><label class="field"
+            >任务编号<input id="taskExternalId" maxlength="100" placeholder="例如：HV-2026-001" /></label
+          <label class="field"
             >任务名称<input id="taskTitle" required maxlength="180" /></label
           ><label class="field wide"
             >任务描述<textarea id="taskDescription"></textarea></label
@@ -197,11 +215,17 @@
           </button>
         </header>
         <div class="dialog-body">
-          <p>支持 XLSX、CSV、TSV。系统先预检，不会直接写入。</p>
+          <p>支持 XLSX、CSV、TSV。先预检负责人、组别、日期和依赖关系，再写入当前赛季。</p>
           <div class="actions">
-            <a class="btn" href="/api/plans/import-template">下载模板</a
+            <a class="btn primary" href="/api/plans/import-template.xlsx">下载 Excel 模板</a
+            ><a class="btn" href="/api/plans/import-template">下载 CSV 模板</a
             ><input id="ganttFile" type="file" accept=".xlsx,.csv,.tsv" />
           </div>
+          <label class="field import-strategy">导入方式<select id="ganttImportStrategy">
+            <option value="upsert">按任务编号新增或更新（推荐）</option>
+            <option value="create_only">只允许新增，编号重复即停止</option>
+          </select></label>
+          <div id="importSummary" class="import-summary hidden"></div>
           <div id="importPreview" class="preview-list empty">请选择文件</div>
         </div>
         <footer>
@@ -234,6 +258,6 @@
       <div id="reminderList" class="reminder-list"></div>
     </aside>
     <div id="toast" class="toast"></div>
-    <script src="/static/plans.js?v=2.4.0"></script>
+    <script src="/static/plans.js?v=2.4.1"></script>
   </body>
 </html>

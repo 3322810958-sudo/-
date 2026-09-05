@@ -10,7 +10,7 @@ from tests.test_api import login
 
 
 def test_v240_pages_plan_tasks_import_and_reminders() -> None:
-    assert __version__ == "2.4.0"
+    assert __version__ == "2.4.1"
     with TestClient(app) as client:
         assert client.get("/plans").status_code == 200
         assert client.get("/components").status_code == 200

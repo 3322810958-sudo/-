@@ -216,8 +216,11 @@ a {
 }
 .filters {
   display: grid;
-  grid-template-columns: 1fr 190px 190px auto;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
   gap: 10px;
+}
+.filters > :first-child {
+  min-width: 220px;
 }
 .filters input:not([type="checkbox"]),
 .filters select,
@@ -435,6 +438,79 @@ dialog::backdrop {
 .gantt-bar.done {
   background: linear-gradient(90deg, #5de58a, #238c56);
 }
+.task-board {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(220px, 1fr));
+  gap: 12px;
+  overflow: auto;
+  padding-bottom: 6px;
+}
+.board-column {
+  min-height: 280px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: rgba(5, 15, 24, 0.62);
+  padding: 10px;
+}
+.board-column > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 3px 4px 11px;
+}
+.board-column > header span {
+  min-width: 24px;
+  padding: 3px 7px;
+  border-radius: 999px;
+  background: rgba(39, 211, 255, 0.12);
+  color: var(--accent);
+  text-align: center;
+  font-size: 11px;
+}
+.board-column > div {
+  display: grid;
+  gap: 8px;
+}
+.board-card {
+  width: 100%;
+  display: grid;
+  gap: 7px;
+  padding: 11px;
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--accent);
+  border-radius: 8px;
+  background: #0c1e2d;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+}
+.board-card.priority-edge-urgent {
+  border-left-color: var(--red);
+}
+.board-card.priority-edge-high {
+  border-left-color: var(--amber);
+}
+.board-card span,
+.board-card small,
+.board-empty {
+  color: var(--muted);
+}
+.board-card i {
+  height: 5px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgba(145, 168, 186, 0.18);
+}
+.board-card i em {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--accent);
+}
+.board-empty {
+  margin: 8px 4px;
+  font-size: 12px;
+}
 .reminder-drawer {
   position: fixed;
   right: 18px;
@@ -488,6 +564,24 @@ dialog::backdrop {
   grid-template-columns: 1fr auto;
   gap: 12px;
 }
+.import-strategy {
+  margin: 14px 0;
+}
+.import-summary {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin: 14px 0 8px;
+  padding: 11px 13px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(5, 15, 24, 0.65);
+}
+.import-summary span {
+  padding-left: 10px;
+  border-left: 1px solid var(--line);
+}
 .switches {
   display: flex;
   gap: 12px;
@@ -503,6 +597,81 @@ dialog::backdrop {
 .inventory-name b,
 .inventory-name small {
   display: block;
+}
+.resource-links {
+  display: flex;
+  gap: 5px;
+}
+.resource-links span {
+  padding: 2px 5px;
+  border: 1px solid rgba(39, 211, 255, 0.28);
+  border-radius: 4px;
+  color: var(--accent);
+}
+.component-resource-preview {
+  grid-template-columns: minmax(160px, 260px) 1fr;
+  align-items: center;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(5, 15, 24, 0.65);
+}
+.component-resource-preview:not(.hidden) {
+  display: grid;
+}
+.component-resource-preview img {
+  width: 100%;
+  max-height: 180px;
+  object-fit: contain;
+  border-radius: 7px;
+  background: #fff;
+}
+.inventory-insights {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+}
+.inventory-insights > div {
+  min-width: 0;
+  padding: 13px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: rgba(5, 15, 24, 0.58);
+}
+.inventory-insights h3 {
+  margin: 0 0 10px;
+  font-size: 13px;
+}
+.stat-list {
+  display: grid;
+  gap: 6px;
+  max-height: 220px;
+  overflow: auto;
+}
+.stat-list > div,
+.stat-list > button {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  padding: 8px;
+  border: 0;
+  border-bottom: 1px solid rgba(177, 210, 235, 0.1);
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+}
+.stat-list > div > span,
+.stat-list > button > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.data-table code {
+  color: var(--accent);
+  font-family: Consolas, monospace;
 }
 .inventory-name small {
   color: var(--muted);
@@ -581,7 +750,8 @@ dialog::backdrop {
     padding: 14px 18px;
   }
   .form-grid,
-  .mouser-results {
+  .mouser-results,
+  .inventory-insights {
     grid-template-columns: 1fr;
   }
 }

@@ -81,17 +81,33 @@ async function loadMeta() {
   $("taskDepartments").innerHTML = state.meta.departments
     .map((v) => `<option value="${esc(v)}">${esc(v)}</option>`)
     .join("");
+  $("departmentFilter").innerHTML =
+    '<option value="">全部组别</option>' +
+    state.meta.departments
+      .map((v) => `<option value="${esc(v)}">${esc(v)}</option>`)
+      .join("");
   $("taskAssignees").innerHTML = state.meta.users
     .map(
       (u) =>
         `<option value="${esc(u.id)}">${esc(u.display_name)} · ${esc(u.username)}</option>`,
     )
     .join("");
+  $("assigneeFilter").innerHTML =
+    '<option value="">全部负责人</option>' +
+    state.meta.users
+      .map(
+        (u) =>
+          `<option value="${esc(u.id)}">${esc(u.display_name)} · ${esc(u.username)}</option>`,
+      )
+      .join("");
 }
 async function loadTasks() {
   const query = new URLSearchParams({
     season_id: $("seasonSelect").value,
     status: $("statusFilter").value,
+    priority: $("priorityFilter").value,
+    department: $("departmentFilter").value,
+    assignee_id: $("assigneeFilter").value,
     search: $("taskSearch").value,
   });
   const data = await api(`/api/plans/tasks?${query}`);
@@ -125,8 +141,10 @@ function render() {
   $("metricOverdue").textContent = overdue;
   renderTable();
   renderGantt();
+  renderBoard();
   renderTaskOptions();
   $("ganttPanel").classList.toggle("hidden", $("viewMode").value !== "gantt");
+  $("boardPanel").classList.toggle("hidden", $("viewMode").value !== "board");
   $("tablePanel").classList.toggle("hidden", $("viewMode").value !== "table");
 }
 function userNames(ids = []) {
@@ -139,9 +157,9 @@ function renderTable() {
     state.tasks
       .map(
         (t) =>
-          `<tr><td><b>${esc(t.title)}</b><br><small>${esc(t.priority && labels[t.priority])}优先级</small></td><td>${esc(userNames(t.assignee_user_ids))}</td><td>${esc((t.department || []).join("、") || "未指定")}</td><td><span class="status-chip status-${esc(t.status)}">${esc(labels[t.status])}</span></td><td>${Number(t.progress) || 0}%</td><td>${esc(t.due_date || "未设置")}</td><td><button class="row-action" data-edit="${esc(t.id)}">查看/编辑</button></td></tr>`,
+          `<tr><td><code>${esc(t.external_id || "—")}</code></td><td><b>${esc(t.title)}</b><br><small>${esc(t.priority && labels[t.priority])}优先级</small></td><td>${esc(userNames(t.assignee_user_ids))}</td><td>${esc((t.department || []).join("、") || "未指定")}</td><td><span class="status-chip status-${esc(t.status)}">${esc(labels[t.status])}</span></td><td>${Number(t.progress) || 0}%</td><td>${esc(t.due_date || "未设置")}</td><td><button class="row-action" data-edit="${esc(t.id)}">查看/编辑</button></td></tr>`,
       )
-      .join("") || '<tr><td colspan="7" class="empty">暂无任务</td></tr>';
+      .join("") || '<tr><td colspan="8" class="empty">暂无任务</td></tr>';
 }
 function renderGantt() {
   if (!state.tasks.length) {
@@ -172,9 +190,23 @@ function renderGantt() {
             0.8,
             ((Math.max(end, start + 864e5) - start) / span) * 100,
           );
-        return `<div class="gantt-row"><div class="gantt-label"><b>${esc(t.title)}</b><br><small>${esc(userNames(t.assignee_user_ids))}</small></div><div class="gantt-track"><button class="gantt-bar ${esc(t.status)}" data-edit="${esc(t.id)}" style="left:${left}%;width:${Math.min(width, 100 - left)}%" title="${esc(t.start_date)} → ${esc(t.due_date)}"><i style="width:${Number(t.progress) || 0}%"></i></button></div></div>`;
+        return `<div class="gantt-row"><div class="gantt-label"><b>${esc(t.external_id ? `${t.external_id} · ${t.title}` : t.title)}</b><br><small>${esc(userNames(t.assignee_user_ids))}</small></div><div class="gantt-track"><button class="gantt-bar ${esc(t.status)}" data-edit="${esc(t.id)}" style="left:${left}%;width:${Math.min(width, 100 - left)}%" title="${esc(t.start_date)} → ${esc(t.due_date)} · ${Number(t.progress) || 0}%"><i style="width:${Number(t.progress) || 0}%"></i></button></div></div>`;
       })
       .join("");
+}
+function renderBoard() {
+  const statuses = ["todo", "doing", "review", "blocked", "done"];
+  $("taskBoard").innerHTML = statuses
+    .map((status) => {
+      const tasks = state.tasks.filter((task) => task.status === status);
+      return `<section class="board-column"><header><b>${esc(labels[status])}</b><span>${tasks.length}</span></header><div>${tasks
+        .map(
+          (task) =>
+            `<button class="board-card priority-edge-${esc(task.priority)}" data-edit="${esc(task.id)}"><small>${esc(task.external_id || labels[task.priority])}</small><b>${esc(task.title)}</b><span>${esc(userNames(task.assignee_user_ids))}</span><i><em style="width:${Number(task.progress) || 0}%"></em></i><small>${Number(task.progress) || 0}% · ${esc(task.due_date || "未设截止")}</small></button>`,
+        )
+        .join("") || '<p class="board-empty">暂无任务</p>'}</div></section>`;
+    })
+    .join("");
 }
 function renderTaskOptions() {
   const options = state.tasks
@@ -186,6 +218,7 @@ function renderTaskOptions() {
 function openTask(item = null) {
   $("taskForm").reset();
   $("taskId").value = item?.id || "";
+  $("taskExternalId").value = item?.external_id || "";
   $("taskDialogTitle").textContent = item ? "查看或编辑任务" : "新建任务";
   $("taskTitle").value = item?.title || "";
   $("taskDescription").value = item?.description || "";
@@ -217,6 +250,7 @@ async function saveTask(event) {
   event.preventDefault();
   const id = $("taskId").value,
     payload = {
+      external_id: $("taskExternalId").value,
       title: $("taskTitle").value,
       description: $("taskDescription").value,
       status: $("taskStatus").value,
@@ -250,6 +284,7 @@ async function importFile(apply = false) {
   const form = new FormData();
   form.append("file", file);
   form.append("apply", String(apply));
+  form.append("strategy", $("ganttImportStrategy").value);
   try {
     const result = await api("/api/plans/import", {
       method: "POST",
@@ -257,12 +292,14 @@ async function importFile(apply = false) {
     });
     if (apply) {
       $("importDialog").close();
-      toast(`已导入 ${result.count} 项任务`);
+      toast(`导入完成：新增 ${result.created_count} 项，更新 ${result.updated_count} 项`);
       await loadTasks();
       return;
     }
     state.importReady = result.can_apply;
     $("applyImportBtn").disabled = !result.can_apply;
+    $("importSummary").classList.remove("hidden");
+    $("importSummary").innerHTML = `<b>共 ${Number(result.count) || 0} 项</b><span class="good-stock">新增 ${Number(result.create_count) || 0}</span><span class="status-doing">更新 ${Number(result.update_count) || 0}</span><span class="${result.errors?.length ? "low-stock" : "good-stock"}">${result.errors?.length || 0} 个错误</span>`;
     $("importPreview").className = "preview-list";
     $("importPreview").innerHTML =
       (result.errors || [])
@@ -271,10 +308,16 @@ async function importFile(apply = false) {
             `<div class="preview-row"><span class="low-stock">${esc(v)}</span></div>`,
         )
         .join("") +
+      (result.warnings || [])
+        .map(
+          (v) =>
+            `<div class="preview-row"><span class="status-review">提示：${esc(v)}</span></div>`,
+        )
+        .join("") +
       (result.items || [])
         .map(
           (v) =>
-            `<div class="preview-row"><span><b>${esc(v.title)}</b><br><small>${esc(v.start_date || "未设开始")} → ${esc(v.due_date || "未设截止")}</small></span><b>${Number(v.progress) || 0}%</b></div>`,
+            `<div class="preview-row"><span><b>${esc(v.external_id || `第 ${v.row_number} 行`)} · ${esc(v.title)}</b><br><small>${esc((v.departments || []).join("、") || "未设组别")} · ${esc((v.assignee_names || []).join("、") || "未设负责人")} · ${esc(v.start_date || "未设开始")} → ${esc(v.due_date || "未设截止")}</small></span><b class="${v.action === "update" ? "status-doing" : "good-stock"}">${v.action === "update" ? "更新" : "新增"} · ${Number(v.progress) || 0}%</b></div>`,
         )
         .join("");
     toast(`预检完成：${result.count} 项`);
@@ -326,12 +369,22 @@ $("addTaskBtn").addEventListener("click", () => openTask());
 $("refreshBtn").addEventListener("click", loadTasks);
 $("seasonSelect").addEventListener("change", loadTasks);
 $("statusFilter").addEventListener("change", loadTasks);
+$("priorityFilter").addEventListener("change", loadTasks);
+$("departmentFilter").addEventListener("change", loadTasks);
+$("assigneeFilter").addEventListener("change", loadTasks);
 $("taskSearch").addEventListener("input", () => {
   clearTimeout(state.searchTimer);
   state.searchTimer = setTimeout(loadTasks, 280);
 });
 $("viewMode").addEventListener("change", render);
-$("importBtn").addEventListener("click", () => $("importDialog").showModal());
+$("importBtn").addEventListener("click", () => {
+  state.importReady = false;
+  $("applyImportBtn").disabled = true;
+  $("importSummary").classList.add("hidden");
+  $("importPreview").className = "preview-list empty";
+  $("importPreview").textContent = "请选择文件并预检";
+  $("importDialog").showModal();
+});
 $("previewImportBtn").addEventListener("click", () => importFile(false));
 $("applyImportBtn").addEventListener("click", () => importFile(true));
 $("deleteTaskBtn").addEventListener("click", () => {

@@ -4,7 +4,9 @@ const $ = (id) => document.getElementById(id),
     csrf: "",
     components: [],
     movements: [],
+    statistics: null,
     bomReady: false,
+    componentImportReady: false,
     deleteId: "",
   };
 const movementLabels = {
@@ -68,6 +70,7 @@ async function loadMeta() {
   state.csrf = state.meta.csrf_token;
   $("versionText").textContent = `V${state.meta.version}`;
   $("addComponentBtn").classList.toggle("hidden", !state.meta.can_manage);
+  $("componentImportBtn").classList.toggle("hidden", !state.meta.can_manage);
   $("managerBtn").classList.toggle("hidden", state.meta.user.role !== "admin");
   $("mouserConfigBtn").classList.toggle(
     "hidden",
@@ -75,6 +78,11 @@ async function loadMeta() {
   );
   $("movementType").querySelector('[value="adjust"]').disabled =
     !state.meta.can_manage;
+  $("categoryFilter").innerHTML =
+    '<option value="">全部分类</option>' +
+    (state.meta.categories || [])
+      .map((value) => `<option value="${esc(value)}">${esc(value)}</option>`)
+      .join("");
   $("managerList").innerHTML = state.meta.users
     .filter((u) => u.role !== "viewer")
     .map(
@@ -87,14 +95,18 @@ async function loadData() {
   const query = new URLSearchParams({
     search: $("componentSearch").value,
     category: $("categoryFilter").value,
+    supplier: $("supplierFilter").value,
+    location: $("locationFilter").value,
     low_stock: String($("lowStockOnly").checked),
   });
-  const [components, movements] = await Promise.all([
+  const [components, movements, statistics] = await Promise.all([
     api(`/api/inventory/components?${query}`),
     api("/api/inventory/movements"),
+    api("/api/inventory/statistics"),
   ]);
   state.components = components.items;
   state.movements = movements.items;
+  state.statistics = statistics;
   $("metricCount").textContent = components.count;
   $("metricQuantity").textContent = Number(
     components.quantity || 0,
@@ -103,6 +115,7 @@ async function loadData() {
   $("metricLow").textContent = components.low_stock_count;
   renderComponents();
   renderMovements();
+  renderStatistics();
   renderComponentOptions();
 }
 function renderComponents() {
@@ -110,9 +123,34 @@ function renderComponents() {
     state.components
       .map(
         (c) =>
-          `<tr><td class="inventory-name"><b>${esc(c.name)}</b><small>${esc(c.manufacturer || "未填写制造商")}</small></td><td>${esc(c.manufacturer_part_no || "—")}<br><small>${esc(c.mouser_part_no || "")}</small></td><td>${esc(c.category || "未分类")}<br><small>${esc(c.package || "未填写封装")}</small></td><td>${esc(c.location || "未设置")}</td><td class="${c.low_stock ? "low-stock" : "good-stock"}">${Number(c.quantity).toLocaleString("zh-CN")} ${esc(c.unit)}${c.low_stock ? " · 低库存" : ""}</td><td>${money(c.unit_cost_cents)}</td><td><button class="row-action" data-component="${esc(c.id)}">${state.meta.can_manage ? "编辑" : "查看"}</button></td></tr>`,
+          `<tr><td class="inventory-name"><b>${esc(c.name)}</b><small>${esc(c.manufacturer || "未填写制造商")}</small></td><td>${esc(c.manufacturer_part_no || "—")}<br><small>${esc(c.mouser_part_no || "")}</small></td><td>${esc(c.category || "未分类")}<br><small>${esc(c.package || "未填写封装")}</small></td><td>${esc(c.location || "未设置")}</td><td class="${c.low_stock ? "low-stock" : "good-stock"}">${Number(c.quantity).toLocaleString("zh-CN")} ${esc(c.unit)}${c.low_stock ? " · 低库存" : ""}</td><td>${money(c.unit_cost_cents)}</td><td>${esc(c.supplier || "—")}<br><small class="resource-links">${c.datasheet_url ? '<span>手册</span>' : ""}${c.image_url ? '<span>图片</span>' : ""}${c.purchase_url ? '<span>采购</span>' : ""}</small></td><td><button class="row-action" data-component="${esc(c.id)}">${state.meta.can_manage ? "编辑" : "查看"}</button></td></tr>`,
       )
-      .join("") || '<tr><td colspan="7" class="empty">暂无元件档案</td></tr>';
+      .join("") || '<tr><td colspan="8" class="empty">暂无元件档案</td></tr>';
+}
+function renderStatistics() {
+  const data = state.statistics || { categories: [], seasons: [], shortages: [] };
+  $("categoryStats").innerHTML =
+    data.categories
+      .slice(0, 10)
+      .map(
+        (item) =>
+          `<div><span>${esc(item.category || "未分类")} · ${Number(item.component_count) || 0} 种</span><b>${Number(item.quantity || 0).toLocaleString("zh-CN")}</b></div>`,
+      )
+      .join("") || '<p class="board-empty">暂无分类数据</p>';
+  $("seasonStats").innerHTML =
+    data.seasons
+      .map(
+        (item) =>
+          `<div><span>${esc(item.name)}</span><b class="good-stock">入 ${Number(item.stock_in || 0).toLocaleString("zh-CN")}</b><b class="status-review">出 ${Number(item.stock_out || 0).toLocaleString("zh-CN")}</b></div>`,
+      )
+      .join("") || '<p class="board-empty">暂无赛季流水</p>';
+  $("shortageStats").innerHTML =
+    data.shortages
+      .map(
+        (item) =>
+          `<button data-component="${esc(item.id)}"><span>${esc(item.name)} · ${esc(item.location || "未设库位")}</span><b class="low-stock">${Number(item.quantity)} / ${Number(item.minimum_quantity)} ${esc(item.unit)}</b></button>`,
+      )
+      .join("") || '<p class="good-stock">当前没有低库存元件</p>';
 }
 function renderMovements() {
   $("movementRows").innerHTML =
@@ -147,10 +185,13 @@ function openComponent(item = null) {
   $("componentUnit").value = item?.unit || "个";
   $("componentMinimum").value = item?.minimum_quantity || 0;
   $("componentCost").value = (Number(item?.unit_cost_cents) || 0) / 100;
+  $("componentSupplier").value = item?.supplier || "";
   $("componentParameters").value = item?.parameters || "";
   $("componentDatasheet").value = item?.datasheet_url || "";
   $("componentImage").value = item?.image_url || "";
+  $("componentPurchase").value = item?.purchase_url || "";
   $("componentNote").value = item?.note || "";
+  renderResourcePreview(item);
   $("deleteComponentBtn").classList.toggle(
     "hidden",
     !item || state.meta.user.role !== "admin",
@@ -159,6 +200,19 @@ function openComponent(item = null) {
     if (el.type !== "button") el.disabled = !state.meta.can_manage;
   });
   $("componentDialog").showModal();
+}
+function renderResourcePreview(item) {
+  const preview = $("componentResourcePreview");
+  const links = [
+    item?.datasheet_url
+      ? `<a class="btn" href="${esc(item.datasheet_url)}" target="_blank" rel="noopener noreferrer">打开数据手册</a>`
+      : "",
+    item?.purchase_url
+      ? `<a class="btn" href="${esc(item.purchase_url)}" target="_blank" rel="noopener noreferrer">打开采购页面</a>`
+      : "",
+  ].join("");
+  preview.classList.toggle("hidden", !item?.image_url && !links);
+  preview.innerHTML = `${item?.image_url ? `<img src="${esc(item.image_url)}" alt="${esc(item.name || "元件图片")}" loading="lazy">` : ""}<div class="actions">${links}</div>`;
 }
 async function saveComponent(event) {
   event.preventDefault();
@@ -174,9 +228,11 @@ async function saveComponent(event) {
       unit: $("componentUnit").value,
       minimum_quantity: Number($("componentMinimum").value),
       unit_cost: Number($("componentCost").value),
+      supplier: $("componentSupplier").value,
       parameters: $("componentParameters").value,
       datasheet_url: $("componentDatasheet").value,
       image_url: $("componentImage").value,
+      purchase_url: $("componentPurchase").value,
       note: $("componentNote").value,
     };
   try {
@@ -261,6 +317,52 @@ async function bomImport(apply = false) {
     toast(error.message);
   }
 }
+async function componentImport(apply = false) {
+  const file = $("componentImportFile").files[0];
+  if (!file) return toast("请选择元件表文件");
+  const form = new FormData();
+  form.append("file", file);
+  form.append("mode", $("componentImportMode").value);
+  form.append("apply", String(apply));
+  try {
+    const result = await api("/api/inventory/components/import", {
+      method: "POST",
+      body: form,
+    });
+    if (apply) {
+      $("componentImportDialog").close();
+      toast(
+        `导入完成：新增 ${result.created_count}，更新 ${result.updated_count}，入库 ${result.movement_count}`,
+      );
+      await loadMeta();
+      await loadData();
+      return;
+    }
+    state.componentImportReady = result.can_apply;
+    $("componentImportApplyBtn").disabled = !result.can_apply;
+    $("componentImportSummary").classList.remove("hidden");
+    $("componentImportSummary").innerHTML = `<b>共 ${Number(result.count) || 0} 项</b><span class="good-stock">新增 ${Number(result.create_count) || 0}</span><span class="status-doing">更新 ${Number(result.update_count) || 0}</span><span class="${result.errors?.length ? "low-stock" : "good-stock"}">${result.errors?.length || 0} 个错误</span>`;
+    $("componentImportPreview").className = "preview-list";
+    $("componentImportPreview").innerHTML =
+      (result.errors || [])
+        .map(
+          (message) =>
+            `<div class="preview-row"><span class="low-stock">${esc(message)}</span></div>`,
+        )
+        .join("") +
+      (result.items || [])
+        .map(
+          (item) =>
+            `<div class="preview-row"><span><b>${esc(item.name)}</b><br><small>${esc(item.manufacturer_part_no || "无型号")} · ${esc(item.category)} · ${esc(item.package || "未设封装")} · 当前 ${Number(item.available)}，表中 ${Number(item.quantity)}</small></span><b class="${item.action === "update" ? "status-doing" : "good-stock"}">${item.action === "update" ? "更新" : "新增"}</b></div>`,
+        )
+        .join("");
+    toast(`元件表预检完成：${result.count} 项`);
+  } catch (error) {
+    state.componentImportReady = false;
+    $("componentImportApplyBtn").disabled = true;
+    toast(error.message);
+  }
+}
 async function searchMouser() {
   const q = $("mouserQuery").value.trim();
   if (!q) return toast("请输入型号或关键词");
@@ -310,6 +412,24 @@ document.addEventListener("click", async (event) => {
 $("componentForm").addEventListener("submit", saveComponent);
 $("movementForm").addEventListener("submit", saveMovement);
 $("addComponentBtn").addEventListener("click", () => openComponent());
+$("componentImportBtn").addEventListener("click", () => {
+  state.componentImportReady = false;
+  $("componentImportApplyBtn").disabled = true;
+  $("componentImportSummary").classList.add("hidden");
+  $("componentImportPreview").className = "preview-list empty";
+  $("componentImportPreview").textContent = "请选择文件并预检";
+  $("componentImportDialog").showModal();
+});
+$("componentImportPreviewBtn").addEventListener("click", () =>
+  componentImport(false),
+);
+$("componentImportApplyBtn").addEventListener("click", () =>
+  componentImport(true),
+);
+$("componentImportMode").addEventListener(
+  "change",
+  () => ($("componentImportApplyBtn").disabled = true),
+);
 $("movementBtn").addEventListener("click", () => {
   $("movementForm").reset();
   $("movementDialog").showModal();
@@ -396,10 +516,26 @@ $("componentSearch").addEventListener("input", () => {
   clearTimeout(state.searchTimer);
   state.searchTimer = setTimeout(loadData, 280);
 });
-$("categoryFilter").addEventListener("input", () => {
-  clearTimeout(state.categoryTimer);
-  state.categoryTimer = setTimeout(loadData, 280);
+$("categoryFilter").addEventListener("change", loadData);
+$("supplierFilter").addEventListener("input", () => {
+  clearTimeout(state.supplierTimer);
+  state.supplierTimer = setTimeout(loadData, 280);
 });
+$("locationFilter").addEventListener("input", () => {
+  clearTimeout(state.locationTimer);
+  state.locationTimer = setTimeout(loadData, 280);
+});
+[$("componentImage"), $("componentDatasheet"), $("componentPurchase")].forEach(
+  (input) =>
+    input.addEventListener("input", () =>
+      renderResourcePreview({
+        name: $("componentName").value,
+        image_url: $("componentImage").value,
+        datasheet_url: $("componentDatasheet").value,
+        purchase_url: $("componentPurchase").value,
+      }),
+    ),
+);
 $("lowStockOnly").addEventListener("change", loadData);
 (async () => {
   try {

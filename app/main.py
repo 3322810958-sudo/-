@@ -140,7 +140,7 @@ def _default_login_info_items(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     credits += "\n鸣谢：PaddleOCR、pypdf、pywebview、Tabler 等开源项目"
     return [
         {"id": "credits", "type": "credits", "title": "创作者与鸣谢", "content": credits, "visible": True},
-        {"id": "updates", "type": "updates", "title": "V2.4.0 本次更新", "content": "新增全队计划甘特图、Deadline 提醒、跨赛季元件库、BOM 缺料分析与故事赛季封面。", "visible": True},
+        {"id": "updates", "type": "updates", "title": "V2.4.1 本次更新", "content": "升级 Excel 甘特图增量导入、任务看板与多条件筛选；完善元件整表导入、资料预览、供应商和跨赛季库存统计。", "visible": True},
         {"id": "season_total", "type": "total", "title": "当前赛季记款总金额", "content": "", "visible": True},
         {"id": "motto", "type": "motto", "title": "队训", "content": "脚踏实地、精益求精", "visible": True},
         {"id": "philosophy", "type": "philosophy", "title": "造车理念", "content": "品质、精致、极致", "visible": True},
